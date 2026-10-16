@@ -19,6 +19,8 @@
 # may also name a "secretFile" of its own, e.g. for the test instance.
 
 set -uo pipefail
+# servers.json and secret files are for this user only
+umask 077
 
 DIR="${CHECKMK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-checkmk}"
 SERVERS="$DIR/servers.json"
@@ -142,8 +144,11 @@ migrate_legacy() {
       + (if $timeout != "" then {timeout: ($timeout | tonumber)} else {} end)]
   ' | write_servers
 
-  # A secret written into the old config moves to the keyring
-  [[ -n "$CMK_SECRET" ]] && store_secret "$id" "$CMK_URL" "$CMK_USER" "$CMK_SECRET" >/dev/null
+  # A secret written into the old config moves to the keyring and out of the file
+  if [[ -n "$CMK_SECRET" ]]; then
+    store_secret "$id" "$CMK_URL" "$CMK_USER" "$CMK_SECRET" >/dev/null
+    sed -i '/^[[:space:]]*CMK_SECRET=/d' "$LEGACY"
+  fi
   mv "$LEGACY" "$LEGACY.migrated"
 }
 
@@ -183,18 +188,39 @@ read_input() {
   fi
 }
 
+# Setups that work but expose more than they need to, as a JSON array of texts
+warnings() {
+  local list=() host
+  host="$(sed -E 's#^[a-z]+://([^/:]+).*#\1#' <<<"$IN_URL")"
+  if [[ "$IN_URL" == http://* && ! "$host" =~ ^(localhost|127\.[0-9.]+|\[?::1\]?)$ ]]; then
+    list+=("Plain http: the secret crosses the network unencrypted. Use https.")
+  fi
+  if [[ "$IN_INSECURE" == true ]]; then
+    list+=("Certificate checks are off: anyone on the way could pose as this server and receive the secret.")
+  fi
+  # Only accounts with access to the Checkmk configuration may list pending changes
+  local args=(-s -o /dev/null --max-time 10 -w '%{http_code}' -H "Accept: application/json")
+  [[ "$IN_INSECURE" == true ]] && args+=(-k)
+  if [[ "$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s %s\n' "$IN_USER" "$IN_SECRET") \
+    "$IN_URL/check_mk/api/1.0/domain-types/activation_run/collections/pending_changes")" == 200 ]]; then
+    list+=("This account can change the Checkmk configuration. The widget only reads; a user with the role Guest user is enough and safer to keep on a laptop.")
+  fi
+  printf '%s\n' "${list[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
 test_connection() {
   read_input
   [[ -n "$IN_URL" ]] || { result false "The URL is missing"; return 1; }
   [[ -n "$IN_USER" ]] || { result false "The user name is missing"; return 1; }
   [[ -n "$IN_SECRET" ]] || { result false "The password or secret is missing"; return 1; }
 
-  local args=(-sS --max-time 10 -w '\n%{http_code}'
-    -H "Authorization: Bearer $IN_USER $IN_SECRET" -H "Accept: application/json")
+  local args=(-sS --max-time 10 -w '\n%{http_code}' -H "Accept: application/json")
   [[ "$IN_INSECURE" == true ]] && args+=(-k)
 
   local response code body version
-  if ! response="$(curl "${args[@]}" "$IN_URL/check_mk/api/1.0/version" 2>&1)"; then
+  # The secret goes to curl through a file descriptor, never on its command line
+  if ! response="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s %s\n' "$IN_USER" "$IN_SECRET") \
+    "$IN_URL/check_mk/api/1.0/version" 2>&1)"; then
     result false "$(head -1 <<<"$response" | sed 's/^curl: ([0-9]*) //')"
     return 1
   fi
@@ -208,7 +234,8 @@ test_connection() {
         result false "Answered, but this does not look like a Checkmk site. Use the site URL, e.g. https://monitoring.example.com/mysite"
         return 1
       fi
-      result true "Connected to Checkmk $version" "$(jq -nc --arg v "$version" '{version: $v}')"
+      result true "Connected to Checkmk $version" \
+        "$(jq -nc --arg v "$version" --argjson w "$(warnings)" '{version: $v, warnings: $w}')"
       ;;
     401|403) result false "Checkmk rejected the user name or secret (HTTP $code)"; return 1 ;;
     404) result false "No Checkmk REST API at this URL (HTTP 404). Use the site URL, e.g. https://monitoring.example.com/mysite"; return 1 ;;
@@ -254,7 +281,7 @@ save() {
     keyring_clear_unused "$old_url" "$old_user"
 
   result true "Saved $name, secret stored in the $( [[ $store == keyring ]] && echo keyring || echo "file" )" \
-    "$(jq -nc --arg id "$id" --arg s "$store" '{id: $id, secretStore: $s}')"
+    "$(jq -nc --arg id "$id" --arg s "$store" --argjson w "$(warnings)" '{id: $id, secretStore: $s, warnings: $w}')"
 }
 
 delete() { # id

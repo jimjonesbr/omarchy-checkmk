@@ -284,6 +284,7 @@ Panel {
   property bool setupBusy: false
   property bool setupOk: false
   property string setupMessage: ""
+  property var setupWarnings: []
   readonly property var editServer: {
     for (var i = 0; i < configured.length; i++) if (configured[i].id === editId) return configured[i]
     return null
@@ -298,6 +299,7 @@ Panel {
   function showEdit(id) {
     editId = id
     setupMessage = ""
+    setupWarnings = []
     setupOk = false
     confirmDelete = ""
     var s = null
@@ -330,6 +332,7 @@ Panel {
     if (setupBusy || !hostWidget) return
     setupBusy = true
     setupMessage = action === "save" ? "Saving…" : "Connecting…"
+    setupWarnings = []
     setupProc.action = action
     setupProc.input = setupInput()
     setupProc.command = [hostWidget.configTool, action]
@@ -382,10 +385,16 @@ Panel {
         root.setupBusy = false
         root.setupOk = !!result && result.ok === true
         root.setupMessage = result ? result.message : "The helper script failed"
+        root.setupWarnings = result && result.warnings ? result.warnings : []
         if (root.setupOk && setupProc.action === "save") {
           root.editId = result.id
           secretField.text = ""
           root.configChanged()
+          // Saved, but the setup is riskier than needed: stay so the warnings get read
+          if (root.setupWarnings.length > 0) {
+            listProc.running = true
+            return
+          }
           root.showServers()
           Qt.callLater(function() { root.selectWhere(function(r) { return r.id === result.id }) })
         }
@@ -1457,6 +1466,19 @@ Panel {
               color: root.setupBusy ? root.dim : (root.setupOk ? Model.OK_COLOR : root.urgent)
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
+            }
+
+            Repeater {
+              model: root.setupBusy ? [] : root.setupWarnings
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: "\u{f0026}  " + modelData
+                color: root.colorFor(1)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
             }
 
             Text {

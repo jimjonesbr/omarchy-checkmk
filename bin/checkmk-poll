@@ -11,6 +11,8 @@
 # Output:  ${XDG_CACHE_HOME:-~/.cache}/omarchy-checkmk/status.json
 
 set -uo pipefail
+# The status file and temporary files are for this user only
+umask 077
 
 BIN="$(dirname "$(realpath "$0")")"
 STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-checkmk"
@@ -28,13 +30,19 @@ trap 'rm -rf "$WORK"' EXIT
 
 send_notification() { # urgency headline description [url]
   ((notify)) || return 0
-  local exec_args=()
+  local exec_args=() body="$3"
+  # The body is rendered with markup and links; plugin output comes from the
+  # monitored hosts and must not be able to inject either
+  # (quoted, since bash 5.2 reads a bare & in the replacement as the match)
+  body="${body//&/'&amp;'}"
+  body="${body//</'&lt;'}"
+  body="${body//>/'&gt;'}"
   [[ -n "${4:-}" ]] && exec_args=(--exec xdg-open "$4")
 
   if command -v omarchy-notification-send >/dev/null; then
-    omarchy-notification-send --app-name Checkmk -g "󰗶" -u "$1" "$2" "$3" "${exec_args[@]}"
+    omarchy-notification-send --app-name Checkmk -g "󰗶" -u "$1" "$2" "$body" "${exec_args[@]}"
   else
-    notify-send -a Checkmk -u "$1" "$2" "$3"
+    notify-send -a Checkmk -u "$1" "$2" "$body"
   fi
 }
 
@@ -66,13 +74,15 @@ fetch() { # server json
     last_state_change has_been_checked acknowledged scheduled_downtime_depth perf_data
     host_state host_plugin_output host_last_state_change host_acknowledged host_scheduled_downtime_depth)
 
-  local args=(-sS --max-time "$timeout" -G -w '\n%{http_code}'
-    -H "Authorization: Bearer $user $secret" -H "Accept: application/json")
+  local args=(-sS --max-time "$timeout" -G -w '\n%{http_code}' -H "Accept: application/json")
   for c in "${columns[@]}"; do args+=(--data-urlencode "columns=$c"); done
   [[ -n "$query" ]] && args+=(--data-urlencode "query=$query")
   [[ "$(jq -r '.insecure // false' <<<"$server")" == true ]] && args+=(-k)
 
-  if ! response="$(curl "${args[@]}" "$url/check_mk/api/1.0/domain-types/service/collections/all" 2>&1)"; then
+  # The secret goes to curl through a file descriptor; on the command line every
+  # local user could read it in /proc
+  if ! response="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s %s\n' "$user" "$secret") \
+    "$url/check_mk/api/1.0/domain-types/service/collections/all" 2>&1)"; then
     failed "$(head -1 <<<"$response" | sed 's/^curl: ([0-9]*) //')"
     return
   fi
