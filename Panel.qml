@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -54,10 +55,26 @@ Panel {
     else if (hostWidget) hostWidget.refresh()
   }
 
-  // "hosts", "problems", "servers", "host:NAME" or "host:SERVER/NAME"
+  // "hosts", "problems", "servers", "host:NAME", "host:SERVER/NAME" or
+  // "service:SERVER/HOST/SERVICE[@RANGE]", which opens the host with that service
+  // expanded and, with a range like 4h, its graph
   function show(name) {
     name = String(name || "")
-    if (name.indexOf("host:") === 0) {
+    if (name.indexOf("service:") === 0) {
+      // An optional "@4h" etc. also loads the graph of that range
+      var range = name.indexOf("@") > 0 ? name.slice(name.lastIndexOf("@") + 1) : ""
+      if (range) name = name.slice(0, name.lastIndexOf("@"))
+      var parts = name.slice(8).split("/")
+      var svc = { server: parts[0], host: parts[1], service: parts.slice(2).join("/") }
+      openHost(svc.server, svc.host)
+      expanded = rowKey(svc)
+      // After the rows of the host view are in place
+      Qt.callLater(function() {
+        selectWhere(function(r) { return rowKey(r) === rowKey(svc) })
+        var row = rows[cursor]
+        if (range && row && rowKey(row) === rowKey(svc)) showGraph(row, range)
+      })
+    } else if (name.indexOf("host:") === 0) {
       var target = name.slice(5)
       var slash = target.indexOf("/")
       var info = slash > 0 ? Model.findHost(hosts, target.slice(0, slash), target.slice(slash + 1))
@@ -174,6 +191,75 @@ Panel {
     cursor = Math.min(cursor, Math.max(0, rows.length - 1))
     // The host disappeared, e.g. after removing it or its server
     if (view === "host" && status && !hostInfo) setView("hosts")
+  }
+
+  // ---- History graphs, fetched only when a range is picked
+  readonly property var graphRanges: [
+    { id: "4h", seconds: 4 * 3600 },
+    { id: "25h", seconds: 25 * 3600 },
+    { id: "1w", seconds: 7 * 86400 },
+    { id: "1m", seconds: 31 * 86400 }
+  ]
+  // The graph of the expanded service: {key, range, loading, error, data}
+  property var graph: ({ key: "", range: "" })
+  // key + range -> {data, at}, so collapsing and reopening a row fetches nothing
+  property var graphCache: ({})
+  readonly property int graphCacheSeconds: 300
+
+  function showGraph(row, range) {
+    var key = rowKey(row)
+    // Picking the shown range again hides the graph
+    if (graph.key === key && graph.range === range && !graph.loading) {
+      graph = { key: "", range: "" }
+      return
+    }
+    var cached = graphCache[key + "\u0000" + range]
+    if (cached && Date.now() / 1000 - cached.at < graphCacheSeconds) {
+      graph = { key: key, range: range, loading: false, error: "", data: cached.data }
+      return
+    }
+    if (!hostWidget || row.metrics.length === 0) return
+    var seconds = 0
+    for (var i = 0; i < graphRanges.length; i++) if (graphRanges[i].id === range) seconds = graphRanges[i].seconds
+    graph = { key: key, range: range, loading: true, error: "", data: null }
+    graphProc.running = false
+    graphProc.command = [hostWidget.graphTool, row.server, row.host, row.service, String(seconds)]
+      .concat(row.metrics.map(function(m) { return m.name }))
+    graphProc.running = true
+  }
+
+  // g: no graph -> 4h -> 25h -> 1w -> 1m -> no graph
+  function cycleGraph() {
+    var row = rows[cursor]
+    if (!row || view === "hosts" || settingsView || !row.metrics || row.metrics.length === 0) return
+    var key = rowKey(row)
+    expanded = key
+    var index = graph.key === key ? graphRanges.map(function(r) { return r.id }).indexOf(graph.range) : -1
+    if (index === graphRanges.length - 1) graph = { key: "", range: "" }
+    else showGraph(row, graphRanges[index + 1].id)
+    Qt.callLater(ensureVisible)
+  }
+
+  Process {
+    id: graphProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var result = null
+        try { result = JSON.parse(text) } catch (e) {}
+        var current = root.graph
+        if (!current.loading) return
+        if (!result || !result.ok) {
+          root.graph = { key: current.key, range: current.range, loading: false,
+            error: result ? result.error : "Could not load the history", data: null }
+          return
+        }
+        var cache = Object.assign({}, root.graphCache)
+        cache[current.key + "\u0000" + current.range] = { data: result, at: Date.now() / 1000 }
+        root.graphCache = cache
+        root.graph = { key: current.key, range: current.range, loading: false, error: "", data: result }
+      }
+    }
   }
 
   // ---- Servers. The helper keeps the secrets in the desktop keyring.
@@ -305,6 +391,182 @@ Panel {
 
   Component.onCompleted: listProc.running = true
 
+  // History of one metric: legend, area chart with warn/crit lines, time axis.
+  // Hovering shows the value at that time.
+  component MetricGraph: Column {
+    id: metricGraph
+    property var curve: null
+    property var metric: null
+    property int hoverIndex: -1
+
+    readonly property var points: curve && curve.points ? curve.points : []
+    readonly property var values: points.filter(function(v) { return v !== null })
+    readonly property string unit: metric ? Model.metricUnit(metric) : ""
+    readonly property real dataMax: values.length ? Math.max.apply(null, values) : 0
+    readonly property real dataMin: values.length ? Math.min.apply(null, values) : 0
+    readonly property real warn: metric ? parseFloat(metric.warn) : NaN
+    readonly property real crit: metric ? parseFloat(metric.crit) : NaN
+    readonly property real yMin: Math.min(0, dataMin)
+    // Percentages up to 100, else a little headroom; levels count when they are near the data
+    readonly property real yMax: {
+      var top = dataMax
+      if (unit === "%" && dataMax <= 100) top = 100
+      ;[warn, crit].forEach(function(level) { if (!isNaN(level) && level <= dataMax * 1.5) top = Math.max(top, level) })
+      top = top * (unit === "%" && top === 100 ? 1 : 1.1)
+      return top > yMin ? top : yMin + 1
+    }
+
+    function format(value) { return value === null || value === undefined ? "–" : Model.formatValue(value, unit) }
+    function timeAt(index) {
+      var t = new Date((curve.start + index * curve.step) * 1000)
+      return Qt.formatDateTime(t, curve.end - curve.start > 26 * 3600 ? "ddd d MMM HH:mm" : "HH:mm")
+    }
+
+    spacing: Style.space(4)
+
+    Item {
+      width: parent.width
+      height: graphTitle.implicitHeight
+
+      Text {
+        id: graphTitle
+        anchors.left: parent.left
+        anchors.right: graphLegend.left
+        anchors.rightMargin: Style.space(8)
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+        text: metricGraph.metric ? Model.metricLabel(metricGraph.metric) : (metricGraph.curve ? metricGraph.curve.metric : "")
+        color: root.fg
+        opacity: 0.6
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+      Text {
+        id: graphLegend
+        anchors.right: parent.right
+        textFormat: Text.PlainText
+        text: metricGraph.curve && metricGraph.curve.error ? "no history"
+          : metricGraph.hoverIndex >= 0
+            ? metricGraph.timeAt(metricGraph.hoverIndex) + "  " + metricGraph.format(metricGraph.points[metricGraph.hoverIndex])
+            : "min " + metricGraph.format(metricGraph.dataMin) + " · max " + metricGraph.format(metricGraph.dataMax)
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    Canvas {
+      id: canvas
+      width: parent.width
+      height: Style.space(64)
+      visible: metricGraph.values.length > 0
+
+      onPaint: {
+        var ctx = getContext("2d")
+        ctx.reset()
+        var pts = metricGraph.points, n = pts.length
+        if (n < 2) return
+        var w = width, h = height, lo = metricGraph.yMin, hi = metricGraph.yMax
+        function x(i) { return i / (n - 1) * w }
+        function y(v) { return h - (v - lo) / (hi - lo) * (h - 2) - 1 }
+
+        // Area and line, broken where Checkmk has no data
+        var line = Color.accent
+        ctx.lineWidth = 1.5
+        ctx.strokeStyle = line
+        ctx.fillStyle = Qt.rgba(line.r, line.g, line.b, 0.18)
+        var i = 0
+        while (i < n) {
+          while (i < n && pts[i] === null) i++
+          if (i >= n) break
+          var first = i
+          ctx.beginPath()
+          ctx.moveTo(x(i), y(pts[i]))
+          while (i < n && pts[i] !== null) { ctx.lineTo(x(i), y(pts[i])); i++ }
+          var last = i - 1
+          ctx.stroke()
+          ctx.lineTo(x(last), h)
+          ctx.lineTo(x(first), h)
+          ctx.closePath()
+          ctx.fill()
+        }
+
+        // Levels as dashed lines
+        function level(value, color) {
+          if (isNaN(value) || value < lo || value > hi) return
+          ctx.save()
+          ctx.setLineDash([4, 3])
+          ctx.lineWidth = 1
+          ctx.strokeStyle = color
+          ctx.beginPath()
+          ctx.moveTo(0, y(value))
+          ctx.lineTo(w, y(value))
+          ctx.stroke()
+          ctx.restore()
+        }
+        level(metricGraph.warn, root.colorFor(1))
+        level(metricGraph.crit, root.colorFor(2))
+
+        // Hover marker
+        if (metricGraph.hoverIndex >= 0) {
+          ctx.strokeStyle = Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.5)
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          ctx.moveTo(x(metricGraph.hoverIndex), 0)
+          ctx.lineTo(x(metricGraph.hoverIndex), h)
+          ctx.stroke()
+        }
+      }
+
+      // The baseline, also when everything is zero
+      Rectangle {
+        anchors.bottom: parent.bottom
+        width: parent.width
+        height: 1
+        color: root.fg
+        opacity: 0.15
+      }
+
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        onPositionChanged: function(mouse) {
+          var n = metricGraph.points.length
+          metricGraph.hoverIndex = n > 1 ? Math.max(0, Math.min(n - 1, Math.round(mouse.x / width * (n - 1)))) : -1
+        }
+        onExited: metricGraph.hoverIndex = -1
+      }
+
+      Connections {
+        target: metricGraph
+        function onHoverIndexChanged() { canvas.requestPaint() }
+        function onCurveChanged() { canvas.requestPaint() }
+      }
+      onWidthChanged: requestPaint()
+    }
+
+    Item {
+      visible: canvas.visible
+      width: parent.width
+      height: startLabel.implicitHeight
+
+      Text {
+        id: startLabel
+        text: metricGraph.curve ? metricGraph.timeAt(0) : ""
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+      Text {
+        anchors.right: parent.right
+        text: "now"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
   component FieldLabel: Row {
     property string label: ""
     property string hint: ""
@@ -353,6 +615,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "s") root.view === "servers" ? root.back() : root.showServers()
         else if (t === "n" && root.view === "servers") root.showEdit("")
+        else if (t === "g") root.cycleGraph()
         else if (t === "1") root.setView("hosts")
         else if (t === "2") root.setView("problems")
         else if (t === "\b") root.back()
@@ -670,13 +933,25 @@ Panel {
                 required property var modelData
                 required property int index
                 readonly property bool selected: index === root.cursor
-                readonly property bool isExpanded: root.expanded === root.rowKey(modelData)
+                readonly property string rowKey: root.rowKey(modelData)
+                readonly property bool isExpanded: root.expanded === rowKey
+                readonly property bool hasGraph: isExpanded && root.graph.key === rowKey
 
                 width: parent.width
                 height: rowContent.implicitHeight + Style.space(12)
                 radius: Math.min(6, Style.cornerRadius)
-                color: selected || rowMouse.containsMouse ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
+                // An expanded row keeps the plain background, so its metrics read like
+                // the network panel's details; an accent bar marks it instead
+                color: !isExpanded && (selected || rowMouse.containsMouse) ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
                 opacity: modelData.handled || modelData.stale ? 0.55 : 1
+
+                Rectangle {
+                  visible: row.isExpanded
+                  width: 2
+                  height: parent.height
+                  radius: 1
+                  color: Color.accent
+                }
 
                 Text {
                   id: stateTag
@@ -756,57 +1031,128 @@ Panel {
                     maximumLineCount: row.isExpanded ? 20 : (row.modelData.state === 0 ? 1 : 2)
                     elide: Text.ElideRight
                     textFormat: Text.PlainText
-                    text: row.isExpanded && row.modelData.details ? row.modelData.details : row.modelData.output
+                    text: row.isExpanded ? Model.detailsText(row.modelData) : row.modelData.output
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                   }
 
-                  // ---- Metrics of the expanded service
-                  Column {
+                  // ---- Metrics of the expanded service, laid out like the network panel's details
+                  Item {
+                    visible: metricsGrid.visible
+                    width: 1
+                    height: Style.space(4)
+                  }
+
+                  GridLayout {
+                    id: metricsGrid
                     visible: row.isExpanded && row.modelData.metrics.length > 0
                     width: parent.width
+                    columns: row.modelData.metrics.length > 1 ? 4 : 2
+                    columnSpacing: Style.space(16)
+                    rowSpacing: Style.spacing.labelGap
+
+                    // Two cells per metric: label, value
+                    Repeater {
+                      model: row.isExpanded
+                        ? [].concat.apply([], row.modelData.metrics.map(function(m) {
+                            return [{ value: false, metric: m }, { value: true, metric: m }]
+                          }))
+                        : []
+
+                      Text {
+                        id: metricCell
+                        readonly property int level: Model.metricState(modelData.metric)
+                        readonly property string levels: Model.metricLevels(modelData.metric)
+
+                        Layout.fillWidth: modelData.value
+                        horizontalAlignment: modelData.value ? Text.AlignRight : Text.AlignLeft
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        text: modelData.value ? Model.metricValue(modelData.metric) : Model.metricLabel(modelData.metric)
+                        color: modelData.value && level > 0 ? root.colorFor(level) : root.fg
+                        opacity: modelData.value ? 1 : 0.6
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        font.bold: modelData.value && level > 0
+
+                        HoverHandler {
+                          id: metricHover
+                          enabled: modelData.value && metricCell.levels !== ""
+                        }
+
+                        PanelToolTip {
+                          visible: metricHover.hovered
+                          text: metricCell.levels
+                          fontFamily: root.fontFamily
+                        }
+                      }
+                    }
+                  }
+
+                  // ---- History: range pills, then one graph per metric
+                  Row {
+                    visible: row.isExpanded && row.modelData.metrics.length > 0 && !row.modelData.stale
+                    topPadding: Style.space(8)
+                    spacing: Style.space(6)
+
+                    Text {
+                      anchors.verticalCenter: rangePills.verticalCenter
+                      anchors.verticalCenterOffset: Style.space(4)
+                      text: "History"
+                      color: root.fg
+                      opacity: 0.6
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      rightPadding: Style.space(4)
+                    }
+
+                    Row {
+                      id: rangePills
+                      spacing: Style.space(6)
+
+                      Repeater {
+                        model: root.graphRanges
+                        Button {
+                          text: modelData.id
+                          selected: root.graph.key === row.rowKey && root.graph.range === modelData.id
+                          bordered: true
+                          foreground: root.fg
+                          fontFamily: root.fontFamily
+                          fontSize: Style.font.caption
+                          verticalPadding: Style.space(2)
+                          horizontalPadding: Style.space(8)
+                          onClicked: root.showGraph(row.modelData, modelData.id)
+                        }
+                      }
+                    }
+                  }
+
+                  Text {
+                    visible: row.hasGraph && (root.graph.loading || root.graph.error !== "")
+                    width: parent.width
                     topPadding: Style.space(6)
-                    spacing: Style.space(3)
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                    text: root.graph.loading ? "Loading…" : root.graph.error
+                    color: root.graph.loading ? root.dim : root.urgent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  Column {
+                    visible: row.hasGraph && !!root.graph.data
+                    width: parent.width
+                    topPadding: Style.space(8)
+                    spacing: Style.space(12)
 
                     Repeater {
-                      model: row.isExpanded ? row.modelData.metrics : []
+                      model: row.hasGraph && root.graph.data ? root.graph.data.curves : []
 
-                      Item {
+                      MetricGraph {
                         width: parent.width
-                        height: metricName.implicitHeight
-
-                        Text {
-                          id: metricName
-                          width: parent.width * 0.42
-                          elide: Text.ElideRight
-                          textFormat: Text.PlainText
-                          text: modelData.name
-                          color: root.dim
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.bodySmall
-                        }
-                        Text {
-                          x: parent.width * 0.42
-                          width: parent.width * 0.22
-                          horizontalAlignment: Text.AlignRight
-                          textFormat: Text.PlainText
-                          text: Model.metricValue(modelData)
-                          color: root.fg
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.bodySmall
-                          font.bold: true
-                        }
-                        Text {
-                          x: parent.width * 0.68
-                          width: parent.width * 0.32
-                          elide: Text.ElideRight
-                          textFormat: Text.PlainText
-                          text: Model.metricLevels(modelData)
-                          color: root.dim
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.caption
-                        }
+                        curve: modelData
+                        metric: row.modelData.metrics.filter(function(m) { return m.name === modelData.metric })[0] || null
                       }
                     }
                   }

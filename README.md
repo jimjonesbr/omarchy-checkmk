@@ -52,8 +52,16 @@ With more than one server the hosts are grouped by server. A server that does no
 answer keeps its last known state, dimmed and marked as unreachable, and you get a
 notification when it goes away and when it comes back.
 
-Selecting a service shows its full output and its metrics (value, warn and crit
-levels); pressing enter again opens it in Checkmk.
+Selecting a service shows its full output and its metrics; hovering a value shows
+its warn and crit levels. Pressing enter again opens the service in Checkmk.
+
+Below the metrics, the *History* buttons (4h, 25h, 1w, 1m) load the history of
+the metrics from Checkmk and draw one graph per metric, with the warn and crit
+levels as dashed lines; hovering a graph shows the value at that time. Nothing is
+downloaded until a range is picked, a range takes roughly 2 to 12 KB per metric,
+and fetched ranges are kept for five minutes. The history needs Checkmk 2.2 or
+newer. The site id is taken from the end of the server URL; for setups where it
+differs, add `"site": "<id>"` to the server in `servers.json`.
 
 | Key                 | Action                                          |
 |---------------------|-------------------------------------------------|
@@ -62,6 +70,7 @@ levels); pressing enter again opens it in Checkmk.
 | `h` / `backspace`   | back                                            |
 | `1` / `2`           | hosts / problems tab                            |
 | `a`                 | problems only / all services                    |
+| `g`                 | history of the selected service: 4h, 25h, 1w, 1m, off |
 | `o`                 | open the selected host or service in Checkmk    |
 | `r`                 | poll now                                        |
 | `s`                 | server list                                     |
@@ -71,6 +80,7 @@ From a terminal or a Hyprland keybinding:
 
 ```bash
 omarchy-shell checkmk show hosts          # or: problems, servers, host:vm-db03, host:staging/stg-web01
+omarchy-shell checkmk show "service:staging/stg-web01/Memory@25h"   # a service with its graph
 omarchy-shell checkmk toggle
 omarchy-shell checkmk refresh
 ```
@@ -89,6 +99,7 @@ heart-pulse) can be changed in the widget settings (`refreshIntervalSec`,
 |--------------------|------------------------------------------------------------|
 | `bin/checkmk-poll`   | queries all servers, writes `~/.cache/omarchy-checkmk/status.json`, notifies |
 | `bin/checkmk-config` | lists, tests, saves and removes servers, keeps the secrets  |
+| `bin/checkmk-graph`  | fetches the metric history of one service for the graphs    |
 | `BarWidget.qml`      | bar icon, runs the poller on a timer, watches the status file |
 | `Panel.qml`          | popup with hosts, problems and the server settings          |
 | `deploy-checkmk/`    | disposable Checkmk test instances with fake hosts (podman)  |

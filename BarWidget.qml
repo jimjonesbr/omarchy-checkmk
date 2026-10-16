@@ -10,6 +10,7 @@ BarWidget {
 
   readonly property string poller: String(Qt.resolvedUrl("bin/checkmk-poll")).replace(/^file:\/\//, "")
   readonly property string configTool: String(Qt.resolvedUrl("bin/checkmk-config")).replace(/^file:\/\//, "")
+  readonly property string graphTool: String(Qt.resolvedUrl("bin/checkmk-graph")).replace(/^file:\/\//, "")
   readonly property string statusPath: (Quickshell.env("XDG_CACHE_HOME") || Quickshell.env("HOME") + "/.cache")
     + "/omarchy-checkmk/status.json"
 
