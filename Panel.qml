@@ -72,7 +72,7 @@ Panel {
       Qt.callLater(function() {
         selectWhere(function(r) { return rowKey(r) === rowKey(svc) })
         var row = rows[cursor]
-        if (range && row && rowKey(row) === rowKey(svc)) showGraph(row, range)
+        if (range && row && rowKey(row) === rowKey(svc)) showGraph(row, range, true)
       })
     } else if (name.indexOf("host:") === 0) {
       var target = name.slice(5)
@@ -206,10 +206,11 @@ Panel {
   property var graphCache: ({})
   readonly property int graphCacheSeconds: 300
 
-  function showGraph(row, range) {
+  // Picking the shown range again hides the graph, unless keep is set
+  function showGraph(row, range, keep) {
     var key = rowKey(row)
-    // Picking the shown range again hides the graph
-    if (graph.key === key && graph.range === range && !graph.loading) {
+    if (graph.key === key && graph.range === range && (graph.loading || keep)) return
+    if (graph.key === key && graph.range === range) {
       graph = { key: "", range: "" }
       return
     }
@@ -226,6 +227,22 @@ Panel {
     graphProc.command = [hostWidget.graphTool, row.server, row.host, row.service, String(seconds)]
       .concat(row.metrics.map(function(m) { return m.name }))
     graphProc.running = true
+  }
+
+  readonly property int graphCacheSize: 20
+
+  // Stores a graph and drops what is no longer needed: entries past their five
+  // minutes, then the oldest ones beyond graphCacheSize
+  function cacheGraph(key, data) {
+    var now = Date.now() / 1000
+    var cache = {}
+    var keys = Object.keys(graphCache)
+      .filter(function(k) { return now - graphCache[k].at < graphCacheSeconds })
+      .sort(function(a, b) { return graphCache[b].at - graphCache[a].at })
+      .slice(0, graphCacheSize - 1)
+    keys.forEach(function(k) { cache[k] = graphCache[k] })
+    cache[key] = { data: data, at: now }
+    graphCache = cache
   }
 
   // g: no graph -> 4h -> 25h -> 1w -> 1m -> no graph
@@ -254,9 +271,7 @@ Panel {
             error: result ? result.error : "Could not load the history", data: null }
           return
         }
-        var cache = Object.assign({}, root.graphCache)
-        cache[current.key + "\u0000" + current.range] = { data: result, at: Date.now() / 1000 }
-        root.graphCache = cache
+        root.cacheGraph(current.key + "\u0000" + current.range, result)
         root.graph = { key: current.key, range: current.range, loading: false, error: "", data: result }
       }
     }
