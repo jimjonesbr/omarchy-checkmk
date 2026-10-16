@@ -22,6 +22,16 @@ the bar, fill in URL, user and secret, *Test connection* and *Save*.
 
 More servers can be added under the gear icon in the panel.
 
+## Remove
+
+Forget the stored secrets first, then remove the plugin and its settings:
+
+```bash
+~/.config/omarchy/plugins/jimjonesbr.checkmk/bin/checkmk-config lock
+omarchy plugin remove jimjonesbr.checkmk
+rm -rf ~/.config/omarchy-checkmk ~/.cache/omarchy-checkmk
+```
+
 ## Usage
 
 Left click opens the panel, middle click polls now, right click opens Checkmk.
