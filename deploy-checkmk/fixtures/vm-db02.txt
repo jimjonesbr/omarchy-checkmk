@@ -1,0 +1,14 @@
+<<<check_mk>>>
+Version: 2.5.0p15
+AgentOS: linux
+<<<local>>>
+0 "PostgreSQL Connections Monitor - pg-sales" total_connections%=4.00|total=8|idle_connections=2|idle_transaction=0|active=0|internal=6 System currently using 4.00% of max_connections (200) - active: 0, idle: 2, idle in transaction: 0, internal: 6
+0 "PostgreSQL Connections Monitor - pg-hr" total_connections%=6.00|total=6|idle_connections=0|idle_transaction=0|active=0|internal=6 System currently using 6.00% of max_connections (100) - active: 0, idle: 0, idle in transaction: 0, internal: 6
+0 "PostgreSQL Connections Monitor - pg-geo" total_connections%=5.50|total=11|idle_connections=4|idle_transaction=0|active=1|internal=6 System currently using 5.50% of max_connections (200) - active: 1, idle: 4, idle in transaction: 0, internal: 6
+0 "PostgreSQL Replication Check - pg-sales" replay_lag=0 Streaming replication OK
+0 "PostgreSQL Replication Check - pg-hr" replay_lag=2843.512 Replica cluster unable to reach primary.\nLast recorded replay on Fri, 16. Oct 2026 at 17:41:07
+0 "PostgreSQL Replication Check - pg-geo" replay_lag=0 Streaming replication OK
+0 "CPU load" load1=0.31;8;16|load5=0.31;8;16|load15=0.31;8;16 15 min load: 0.31 at 8 cores
+0 "Memory" mem_used_percent=38.9;80;90 RAM used: 38.9% of 32 GiB
+0 "Filesystem /var/lib/containers" fs_used_percent=55.2;80;90 55.2% used of 500 GiB
+0 "Interface ens3" in=1832000;;;|out=962000;;; [ens3] (up) speed 10 Gbit/s, in: 1.83 MB/s, out: 962 kB/s

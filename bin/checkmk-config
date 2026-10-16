@@ -1,0 +1,180 @@
+#!/bin/bash
+#
+# Read, test and save the connection settings used by checkmk-poll.
+#
+#   checkmk-config get       print the settings as JSON (never the secret)
+#   checkmk-config test      test the settings read as JSON from stdin
+#   checkmk-config save      save the settings read as JSON from stdin
+#   checkmk-config secret    print the secret, for checkmk-poll
+#
+# test and save read one line of JSON from stdin:
+#   {"url": "...", "user": "...", "secret": "...", "serviceFilter": "...", "hostFilter": "...", "insecure": false}
+# An empty secret keeps the stored one. The secret is kept in the desktop keyring
+# (Secret Service, e.g. gnome-keyring) and only when that is not available in a
+# file next to the config that only the user can read.
+
+set -uo pipefail
+
+CONFIG="${CHECKMK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-checkmk/config}"
+SECRET_FALLBACK="$(dirname "$CONFIG")/secret"
+
+load() {
+  CMK_URL="" CMK_USER="" CMK_SECRET="" CMK_SECRET_FILE="" CMK_SERVICE_FILTER="" CMK_HOST_FILTER="" CMK_INSECURE=0 CMK_TIMEOUT=""
+  # shellcheck source=/dev/null
+  [[ -r "$CONFIG" ]] && source "$CONFIG"
+}
+
+# Accept whatever the user copied from the browser, e.g. https://host/site/check_mk/index.py
+normalize_url() {
+  local url="${1%%/check_mk*}"
+  echo "${url%/}"
+}
+
+keyring_lookup() { # url user
+  command -v secret-tool >/dev/null || return 1
+  secret-tool lookup application omarchy-checkmk url "$1" user "$2" 2>/dev/null
+}
+
+keyring_store() { # url user secret
+  command -v secret-tool >/dev/null || return 1
+  printf '%s' "$3" | secret-tool store --label "Checkmk $2@$1" application omarchy-checkmk url "$1" user "$2" 2>/dev/null
+}
+
+keyring_clear() { # url user
+  command -v secret-tool >/dev/null && secret-tool clear application omarchy-checkmk url "$1" user "$2" 2>/dev/null
+}
+
+# The stored secret of the loaded settings, in the order checkmk-poll has always used
+stored_secret() {
+  if [[ -n "$CMK_SECRET" ]]; then
+    echo "$CMK_SECRET"
+  elif [[ -n "$CMK_SECRET_FILE" ]]; then
+    cat "${CMK_SECRET_FILE/#\~/$HOME}" 2>/dev/null
+  else
+    keyring_lookup "$CMK_URL" "$CMK_USER"
+  fi
+}
+
+secret_store_name() {
+  if [[ -n "$CMK_SECRET" ]]; then echo config
+  elif [[ -n "$CMK_SECRET_FILE" ]]; then echo file
+  elif [[ -n "$CMK_URL" ]] && keyring_lookup "$CMK_URL" "$CMK_USER" >/dev/null; then echo keyring
+  else echo none
+  fi
+}
+
+get() {
+  load
+  jq -n \
+    --arg url "$CMK_URL" --arg user "$CMK_USER" \
+    --arg serviceFilter "$CMK_SERVICE_FILTER" --arg hostFilter "$CMK_HOST_FILTER" \
+    --arg store "$(secret_store_name)" --argjson insecure "$([[ "$CMK_INSECURE" == 1 ]] && echo true || echo false)" \
+    '{configured: ($url != "" and $user != "" and $store != "none"),
+      url: $url, user: $user, serviceFilter: $serviceFilter, hostFilter: $hostFilter,
+      insecure: $insecure, secretStore: $store}'
+}
+
+read_input() {
+  local line
+  IFS= read -r line || true
+  INPUT="$line"
+  jq -e . >/dev/null 2>&1 <<<"$INPUT" || { result false "Invalid input"; exit 1; }
+  NEW_URL="$(normalize_url "$(jq -r '.url // ""' <<<"$INPUT")")"
+  NEW_USER="$(jq -r '.user // ""' <<<"$INPUT")"
+  NEW_SECRET="$(jq -r '.secret // ""' <<<"$INPUT")"
+  NEW_SERVICE_FILTER="$(jq -r '.serviceFilter // ""' <<<"$INPUT")"
+  NEW_HOST_FILTER="$(jq -r '.hostFilter // ""' <<<"$INPUT")"
+  NEW_INSECURE="$(jq -r 'if .insecure then 1 else 0 end' <<<"$INPUT")"
+
+  load
+  [[ -z "$NEW_SECRET" ]] && NEW_SECRET="$(stored_secret)"
+}
+
+result() { # ok message [extra json]
+  jq -nc --argjson ok "$1" --arg message "$2" --argjson extra "${3:-{\}}" '{ok: $ok, message: $message} + $extra'
+}
+
+test_connection() {
+  read_input
+  [[ -n "$NEW_URL" ]] || { result false "The URL is missing"; return 1; }
+  [[ -n "$NEW_USER" ]] || { result false "The user name is missing"; return 1; }
+  [[ -n "$NEW_SECRET" ]] || { result false "The password or secret is missing"; return 1; }
+
+  local args=(-sS --max-time 10 -w '\n%{http_code}'
+    -H "Authorization: Bearer $NEW_USER $NEW_SECRET" -H "Accept: application/json")
+  [[ "$NEW_INSECURE" == 1 ]] && args+=(-k)
+
+  local response code body
+  if ! response="$(curl "${args[@]}" "$NEW_URL/check_mk/api/1.0/version" 2>&1)"; then
+    result false "$(head -1 <<<"$response" | sed 's/^curl: ([0-9]*) //')"
+    return 1
+  fi
+  code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+
+  case "$code" in
+    200)
+      local version
+      version="$(jq -r '.versions.checkmk // empty' <<<"$body" 2>/dev/null)"
+      if [[ -z "$version" ]]; then
+        result false "Answered, but this does not look like a Checkmk site. Use the site URL, e.g. https://monitoring.example.com/mysite"
+        return 1
+      fi
+      result true "Connected to Checkmk $version" "$(jq -nc --arg v "$version" '{version: $v}')"
+      ;;
+    401|403) result false "Checkmk rejected the user name or secret (HTTP $code)"; return 1 ;;
+    404) result false "No Checkmk REST API at this URL (HTTP 404). Use the site URL, e.g. https://monitoring.example.com/mysite"; return 1 ;;
+    *) result false "Unexpected answer from Checkmk (HTTP $code)"; return 1 ;;
+  esac
+}
+
+# Quote values so the config file can be sourced safely
+config_line() { # name value
+  printf '%s=%q\n' "$1" "$2"
+}
+
+save() {
+  read_input
+  [[ -n "$NEW_URL" && -n "$NEW_USER" && -n "$NEW_SECRET" ]] ||
+    { result false "URL, user name and password or secret are required"; return 1; }
+
+  local old_url="$CMK_URL" old_user="$CMK_USER" secret_line store
+  if keyring_store "$NEW_URL" "$NEW_USER" "$NEW_SECRET"; then
+    store=keyring
+    secret_line=""
+    rm -f "$SECRET_FALLBACK"
+  else
+    store=file
+    mkdir -p "$(dirname "$SECRET_FALLBACK")"
+    (umask 077; printf '%s\n' "$NEW_SECRET" > "$SECRET_FALLBACK")
+    secret_line="$(config_line CMK_SECRET_FILE "$SECRET_FALLBACK")"
+  fi
+  # Do not leave the secret of a previous server behind in the keyring
+  if [[ -n "$old_url" && ( "$old_url" != "$NEW_URL" || "$old_user" != "$NEW_USER" ) ]]; then
+    keyring_clear "$old_url" "$old_user"
+  fi
+
+  mkdir -p "$(dirname "$CONFIG")"
+  {
+    echo "# Written by the Checkmk widget, the secret is kept in the $( [[ $store == keyring ]] && echo "desktop keyring" || echo "file below")"
+    config_line CMK_URL "$NEW_URL"
+    config_line CMK_USER "$NEW_USER"
+    if [[ -n "$secret_line" ]]; then echo "$secret_line"; fi
+    config_line CMK_SERVICE_FILTER "$NEW_SERVICE_FILTER"
+    config_line CMK_HOST_FILTER "$NEW_HOST_FILTER"
+    config_line CMK_INSECURE "$NEW_INSECURE"
+    # Keep a timeout set by hand
+    if [[ -n "${CMK_TIMEOUT:-}" ]]; then config_line CMK_TIMEOUT "$CMK_TIMEOUT"; fi
+  } > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+
+  result true "Saved, secret stored in the $( [[ $store == keyring ]] && echo "keyring" || echo "file $SECRET_FALLBACK")" \
+    "$(jq -nc --arg s "$store" '{secretStore: $s}')"
+}
+
+case "${1:-}" in
+  get) get ;;
+  test) test_connection ;;
+  save) save ;;
+  secret) load; stored_secret ;;
+  *) sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

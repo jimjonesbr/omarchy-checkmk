@@ -1,0 +1,14 @@
+<<<check_mk>>>
+Version: 2.5.0p15
+AgentOS: linux
+<<<local>>>
+0 "PostgreSQL Connections Monitor - pg-sales" total_connections%=23.50|total=47|idle_connections=38|idle_transaction=1|active=8|internal=6 System currently using 23.50% of max_connections (200) - active: 8, idle: 38, idle in transaction: 1, internal: 6
+0 "PostgreSQL Connections Monitor - pg-hr" total_connections%=11.00|total=11|idle_connections=9|idle_transaction=0|active=2|internal=6 System currently using 11.00% of max_connections (100) - active: 2, idle: 9, idle in transaction: 0, internal: 6
+0 "PostgreSQL Connections Monitor - pg-geo" total_connections%=34.00|total=68|idle_connections=51|idle_transaction=2|active=15|internal=6 System currently using 34.00% of max_connections (200) - active: 15, idle: 51, idle in transaction: 2, internal: 6
+0 "PostgreSQL Replication Check - pg-sales" replay_lag=0.004 Streaming to 1 standby(s), replay lag 4 ms
+0 "PostgreSQL Replication Check - pg-hr" replay_lag=0 No standby connected to replication slot(s): standby_vm_db02
+0 "PostgreSQL Replication Check - pg-geo" replay_lag=0 Streaming to 1 standby(s), replay lag n/a (standby caught up, no recent WAL activity)
+0 "CPU load" load1=1.20;8;16|load5=1.20;8;16|load15=1.20;8;16 15 min load: 1.20 at 8 cores
+0 "Memory" mem_used_percent=61.4;80;90 RAM used: 61.4% of 32 GiB
+0 "Filesystem /var/lib/containers" fs_used_percent=54.0;80;90 54.0% used of 500 GiB
+0 "Interface ens3" in=1832000;;;|out=962000;;; [ens3] (up) speed 10 Gbit/s, in: 1.83 MB/s, out: 962 kB/s

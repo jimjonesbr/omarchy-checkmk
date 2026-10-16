@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "jimjonesbr.checkmk",
+  "name": "Checkmk",
+  "version": "0.2.0",
+  "author": "Jim Jones",
+  "license": "MIT",
+  "description": "Checkmk service states in the Omarchy bar, with desktop notifications on state changes.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Checkmk",
+    "description": "Worst Checkmk state as a bar icon, problems in a popup.",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 60,
+      "notifications": true,
+      "icon": "󰗶"
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 10,
+        "max": 3600,
+        "step": 10,
+        "defaultValue": 60
+      },
+      {
+        "key": "notifications",
+        "type": "boolean",
+        "label": "Notify on state changes",
+        "defaultValue": true
+      },
+      {
+        "key": "icon",
+        "type": "string",
+        "label": "Icon (Nerd Font glyph)",
+        "defaultValue": "󰗶"
+      }
+    ]
+  }
+}

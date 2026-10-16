@@ -1,0 +1,224 @@
+#!/bin/bash
+#
+# Fetch service states from the Checkmk REST API, write them to a status file
+# and send a desktop notification for every service that changed state since
+# the previous run.
+#
+#   checkmk-poll              poll once
+#   checkmk-poll --quiet      poll once without notifications
+#
+# Configuration: ${XDG_CONFIG_HOME:-~/.config}/omarchy-checkmk/config (see config.example)
+# Output:        ${XDG_CACHE_HOME:-~/.cache}/omarchy-checkmk/status.json
+
+set -uo pipefail
+
+CONFIG="${CHECKMK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-checkmk/config}"
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-checkmk"
+STATUS="$STATE_DIR/status.json"
+
+# More changes than this in a single poll are announced as one summary
+MAX_NOTIFICATIONS=5
+
+notify=1
+[[ "${1:-}" == "--quiet" ]] && notify=0
+
+mkdir -p "$STATE_DIR"
+
+# Write the status atomically, so the bar widget never reads a half written file
+write_status() {
+  cat > "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+}
+
+fail() { # message [unconfigured]
+  local previous_error
+  previous_error="$(jq -r '.error // ""' "$STATUS" 2>/dev/null)"
+  # Keep the last known services, so the panel can still show them as stale
+  jq -n --arg error "$1" --arg url "${CMK_URL:-}" --argjson unconfigured "$([[ -n "${2:-}" ]] && echo true || echo false)" \
+    --slurpfile prev <(cat "$STATUS" 2>/dev/null || echo '{}') '
+    # Without settings the old services belong to a server that is no longer configured
+    (if $unconfigured then {} else ($prev[0] // {}) end)
+    + {ok: false, error: $error, url: $url, unconfigured: $unconfigured, checked: now | floor}
+  ' | write_status
+
+  # Nothing to announce before the widget has been set up
+  if ((notify)) && [[ -z "$previous_error" && -z "${2:-}" ]]; then
+    send_notification normal "Checkmk unreachable" "$1"
+  fi
+  exit 1
+}
+
+send_notification() { # urgency headline description [url]
+  local exec_args=()
+  [[ -n "${4:-}" ]] && exec_args=(--exec xdg-open "$4")
+
+  if command -v omarchy-notification-send >/dev/null; then
+    omarchy-notification-send --app-name Checkmk -g "󰗶" -u "$1" "$2" "$3" "${exec_args[@]}"
+  else
+    notify-send -a Checkmk -u "$1" "$2" "$3"
+  fi
+}
+
+[[ -r "$CONFIG" ]] || fail "Not configured yet" unconfigured
+# shellcheck source=/dev/null
+source "$CONFIG"
+
+: "${CMK_URL:?}" "${CMK_USER:?}"
+CMK_URL="${CMK_URL%/}"
+CMK_SERVICE_FILTER="${CMK_SERVICE_FILTER:-}"
+CMK_HOST_FILTER="${CMK_HOST_FILTER:-}"
+CMK_TIMEOUT="${CMK_TIMEOUT:-10}"
+
+# From the config, a secret file or the desktop keyring
+CMK_SECRET="$("$(dirname "$(realpath "$0")")/checkmk-config" secret)"
+[[ -n "$CMK_SECRET" ]] || fail "No password or secret stored for $CMK_USER" unconfigured
+
+# Livestatus filter for the services table, empty filters match everything
+query="$(jq -nc --arg s "$CMK_SERVICE_FILTER" --arg h "$CMK_HOST_FILTER" '
+  [ (if $s != "" then {op: "~~", left: "description", right: $s} else empty end),
+    (if $h != "" then {op: "~~", left: "host_name", right: $h} else empty end) ] |
+  if length == 0 then empty
+  elif length == 1 then .[0]
+  else {op: "and", expr: .} end
+')"
+
+columns=(host_name description state plugin_output long_plugin_output
+  last_state_change has_been_checked acknowledged scheduled_downtime_depth perf_data
+  host_state host_plugin_output host_last_state_change host_acknowledged host_scheduled_downtime_depth)
+
+curl_args=(-sS --max-time "$CMK_TIMEOUT" -G
+  -H "Authorization: Bearer $CMK_USER $CMK_SECRET"
+  -H "Accept: application/json"
+  -w '\n%{http_code}')
+for c in "${columns[@]}"; do curl_args+=(--data-urlencode "columns=$c"); done
+[[ -n "$query" ]] && curl_args+=(--data-urlencode "query=$query")
+[[ "${CMK_INSECURE:-0}" == 1 ]] && curl_args+=(-k)
+
+response="$(curl "${curl_args[@]}" "$CMK_URL/check_mk/api/1.0/domain-types/service/collections/all" 2>&1)" ||
+  fail "$(echo "$response" | head -1)"
+
+code="${response##*$'\n'}"
+body="${response%$'\n'*}"
+if [[ "$code" != 200 ]]; then
+  fail "HTTP $code: $(echo "$body" | jq -r '.title // .detail // empty' 2>/dev/null || echo "$body" | head -c 200)"
+fi
+
+previous="$(jq -c '.services // []' "$STATUS" 2>/dev/null || echo '[]')"
+# Finishing the setup is not "reachable again"
+previous_error="$(jq -r 'if .unconfigured then "" else .error // "" end' "$STATUS" 2>/dev/null)"
+
+# Normalise the API answer: one object per service, worst first, plus one object per
+# host. Services that are acknowledged, in downtime or on a host that is down count
+# as handled problems. A host that is down or unreachable also gets an entry of its
+# own in the services list, service "Host".
+echo "$body" | jq --arg url "$CMK_URL" '
+  def severity: if . == 2 then 3 elif . == 3 then 2 elif . == 1 then 1 else 0 end;
+  def worst: max_by(severity) // 0;
+  def start($view): $url + "/check_mk/index.py?start_url=" + ($view | @uri);
+  def link($h; $s): start("view.py?view_name=service&host=" + ($h | @uri) + "&service=" + ($s | @uri));
+  def clean: gsub("\\((!!|!|\\?)\\)"; "");
+  # "load1=0.4;4;8;0; mem=41.2%;80;90" -> [{name, value, unit, warn, crit}]
+  def metrics:
+    [ (. // "") | splits(" +")
+      | capture("^(?<name>[^=]+)=(?<value>-?[0-9.]+)(?<unit>[^;]*)(;(?<warn>[^;]*))?(;(?<crit>[^;]*))?")
+      | {name: (.name | ltrimstr("'") | rtrimstr("'")), value: (.value | tonumber), unit, warn: (.warn // ""), crit: (.crit // "")} ];
+  def count($s; $state): $s | map(select(.state == $state)) | length;
+
+  [ .value[].extensions | select(.has_been_checked == 1) ] as $rows
+  | [ $rows[]
+      | {
+          host: .host_name,
+          service: .description,
+          state: .state,
+          isHost: false,
+          handled: (.acknowledged == 1 or .scheduled_downtime_depth > 0 or .host_state != 0),
+          output: (.plugin_output | clean),
+          details: (.long_plugin_output | gsub("\\\\n"; "\n") | clean),
+          metrics: (.perf_data | metrics),
+          since: .last_state_change,
+          link: link(.host_name; .description)
+        }
+    ] as $checks
+  | [ $rows | map(select(.host_state != 0)) | group_by(.host_name)[] | .[0]
+      | {
+          host: .host_name,
+          service: "Host",
+          # DOWN counts as CRIT, UNREACHABLE as UNKNOWN
+          state: (if .host_state == 1 then 2 else 3 end),
+          isHost: true,
+          handled: (.host_acknowledged == 1 or .host_scheduled_downtime_depth > 0),
+          output: ((if .host_state == 1 then "Host is DOWN" else "Host is UNREACHABLE" end) + ": " + .host_plugin_output),
+          details: "",
+          metrics: [],
+          since: .host_last_state_change,
+          link: start("view.py?view_name=hoststatus&host=" + (.host_name | @uri))
+        }
+    ] as $downHosts
+  | ($checks + $downHosts | sort_by(-(.state | severity), (.isHost | not), .host, .service)) as $services
+  | {
+      ok: true,
+      error: "",
+      unconfigured: false,
+      url: $url,
+      checked: now | floor,
+      counts: {
+        ok: count($services; 0),
+        warn: count($services; 1),
+        crit: count($services; 2),
+        unknown: count($services; 3),
+        unhandled: ($services | map(select(.state != 0 and (.handled | not))) | length)
+      },
+      # Worst state among unhandled problems, ordered OK < WARN < UNKNOWN < CRIT
+      worst: ($services | map(select(.handled | not) | .state) | worst),
+      # Like the Checkmk host list: the host is as bad as its worst service, a down host is CRIT
+      hosts: [ $services | group_by(.host)[]
+        | (map(select(.isHost | not))) as $s
+        | {
+            host: .[0].host,
+            state: (map(.state) | worst),
+            down: any(.isHost),
+            unhandled: map(select(.state != 0 and (.handled | not))) | length,
+            counts: {ok: count($s; 0), warn: count($s; 1), crit: count($s; 2), unknown: count($s; 3)},
+            link: start("view.py?view_name=host&host=" + (.[0].host | @uri))
+          }
+      ],
+      services: $services
+    }
+' | write_status || fail "Unexpected answer from $CMK_URL"
+
+((notify)) || exit 0
+
+if [[ -n "$previous_error" ]]; then
+  send_notification low "Checkmk reachable again" "$CMK_URL"
+fi
+
+changes="$(jq -c --argjson prev "$previous" '
+  ($prev | map({key: (.host + "\u0000" + .service), value: .state}) | from_entries) as $before
+  | [ .services[]
+      | select(.handled | not)
+      | (.host + "\u0000" + .service) as $key
+      | select(($before | has($key)) and $before[$key] != .state)
+      | . + {before: $before[$key]} ]
+' "$STATUS")"
+
+# The very first poll only establishes the baseline
+[[ "$previous" == "[]" ]] && exit 0
+
+count="$(jq length <<<"$changes")"
+((count == 0)) && exit 0
+
+names=(OK WARN CRIT UNKNOWN)
+
+if ((count > MAX_NOTIFICATIONS)); then
+  summary="$(jq -r '[.counts | "\(.crit) CRIT", "\(.warn) WARN", "\(.unknown) UNKNOWN"] | join(", ")' "$STATUS")"
+  send_notification critical "Checkmk: $count services changed state" "Now $summary" "$CMK_URL/check_mk/"
+  exit 0
+fi
+
+while IFS=$'\t' read -r state before host service output link; do
+  case "$state" in
+    2) urgency=critical ;;
+    0) urgency=low ;;
+    *) urgency=normal ;;
+  esac
+  send_notification "$urgency" "${names[$state]}  $service" "$host (was ${names[$before]})"$'\n'"$output" "$link"
+done < <(jq -r '.[] | [.state, .before, .host, .service, .output, .link] | @tsv' <<<"$changes")

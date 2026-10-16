@@ -1,0 +1,12 @@
+<<<check_mk>>>
+Version: 2.5.0p15
+AgentOS: linux
+<<<local>>>
+0 "PostgreSQL Connections Monitor - pg-erp" total_connections%=3.00|total=9|idle_connections=3|idle_transaction=0|active=0|internal=6 System currently using 3.00% of max_connections (300) - active: 0, idle: 3, idle in transaction: 0, internal: 6
+0 "PostgreSQL Connections Monitor - pg-wiki" total_connections%=7.00|total=7|idle_connections=1|idle_transaction=0|active=0|internal=6 System currently using 7.00% of max_connections (100) - active: 0, idle: 1, idle in transaction: 0, internal: 6
+0 "PostgreSQL Replication Check - pg-erp" replay_lag=0 Streaming replication OK
+1 "PostgreSQL Replication Check - pg-wiki" replay_lag=4987.000 Replica cluster 01:23:07 behind the primary
+0 "CPU load" load1=0.44;8;16|load5=0.44;8;16|load15=0.44;8;16 15 min load: 0.44 at 8 cores
+0 "Memory" mem_used_percent=41.0;80;90 RAM used: 41.0% of 32 GiB
+0 "Filesystem /var/lib/containers" fs_used_percent=49.8;80;90 49.8% used of 500 GiB
+0 "Interface ens3" in=1832000;;;|out=962000;;; [ens3] (up) speed 10 Gbit/s, in: 1.83 MB/s, out: 962 kB/s
