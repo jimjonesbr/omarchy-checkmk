@@ -1,0 +1,9 @@
+<<<check_mk>>>
+Version: 2.5.0p15
+AgentOS: linux
+<<<local>>>
+0 "CPU load" load1=0.90;4;8|load5=0.90;4;8|load15=0.90;4;8 15 min load: 0.90 at 4 cores
+0 "Memory" mem_used_percent=52.0;80;90 RAM used: 52.0% of 16 GiB
+0 "Filesystem /" fs_used_percent=48.0;80;90 48.0% used of 100 GiB
+0 "PostgreSQL Connections Monitor - pg-stage" total_connections%=12.00|total=12|idle_connections=10|idle_transaction=0|active=2|internal=6 System currently using 12.00% of max_connections (100) - active: 2, idle: 10, idle in transaction: 0, internal: 6
+0 "PostgreSQL Replication Check - pg-stage" replay_lag=0 Primary without replication slots or standbys

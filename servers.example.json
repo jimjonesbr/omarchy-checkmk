@@ -1,0 +1,23 @@
+{
+  "servers": [
+    {
+      "id": "production",
+      "name": "Production",
+      "url": "https://monitoring.example.com/prod",
+      "user": "omarchy",
+      "serviceFilter": "",
+      "hostFilter": "",
+      "insecure": false
+    },
+    {
+      "id": "staging",
+      "name": "Staging",
+      "url": "https://monitoring.example.com/staging",
+      "user": "omarchy",
+      "serviceFilter": "^PostgreSQL|Memory|CPU",
+      "hostFilter": "^stg-",
+      "insecure": true,
+      "timeout": 20
+    }
+  ]
+}

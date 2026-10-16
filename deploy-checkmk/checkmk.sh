@@ -12,6 +12,10 @@
 #
 # Everything can be overridden through the environment, e.g.
 #   CMK_IMAGE=docker.io/checkmk/check-mk-raw:2.4.0p37 ./checkmk.sh up
+#
+# CMK_LAB runs a further, independent instance next to the default one, with its
+# own container, volume, secret and fixtures-<name>/ folder:
+#   CMK_LAB=staging CMK_WEB_PORT=8081 CMK_AGENT_PORT=8001 ./checkmk.sh up
 
 set -euo pipefail
 
@@ -21,18 +25,23 @@ CMK_PASSWORD="${CMK_PASSWORD:-cmkadmin}"
 CMK_WEB_PORT="${CMK_WEB_PORT:-8080}"
 CMK_AGENT_PORT="${CMK_AGENT_PORT:-8000}"
 
-CONTAINER="checkmk-lab"
-VOLUME="checkmk-lab-sites"
+CMK_LAB="${CMK_LAB:-}"
+SUFFIX="${CMK_LAB:+-$CMK_LAB}"
+
+CONTAINER="checkmk-lab$SUFFIX"
+VOLUME="checkmk-lab$SUFFIX-sites"
 # Shared network, in case other lab containers need to reach Checkmk by name
 NETWORK="checkmk-lab"
 
 # Read-only automation user for the Omarchy plugin, its secret is kept next to this script
 API_USER="omarchy"
 SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-SECRET_FILE="$SCRIPT_DIR/$API_USER.secret"
+SECRET_FILE="$SCRIPT_DIR/$API_USER$SUFFIX.secret"
+FIXTURES="$SCRIPT_DIR/fixtures$SUFFIX"
 API="http://localhost:$CMK_WEB_PORT/$CMK_SITE/check_mk/api/1.0"
 
 up() {
+  mkdir -p "$FIXTURES"
   podman network exists "$NETWORK" || podman network create "$NETWORK" >/dev/null
 
   if podman container exists "$CONTAINER"; then
@@ -46,7 +55,7 @@ up() {
       -p "$CMK_AGENT_PORT:8000" \
       -v "$VOLUME:/omd/sites" \
       -v /etc/localtime:/etc/localtime:ro \
-      -v "$SCRIPT_DIR/fixtures:/fixtures:ro" \
+      -v "$FIXTURES:/fixtures:ro" \
       -e CMK_SITE_ID="$CMK_SITE" \
       -e CMK_PASSWORD="$CMK_PASSWORD" \
       "$CMK_IMAGE" >/dev/null
@@ -107,7 +116,8 @@ down() {
 purge() {
   down
   podman volume rm -f "$VOLUME" >/dev/null 2>&1 || true
-  podman network rm -f "$NETWORK" >/dev/null 2>&1 || true
+  # Other lab instances may still use the network
+  podman network rm "$NETWORK" >/dev/null 2>&1 || true
   rm -f "$SECRET_FILE"
   echo "Volume, network and API secret removed"
 }
@@ -120,5 +130,5 @@ case "${1:-}" in
   logs) podman logs -f "$CONTAINER" ;;
   secret) cat "$SECRET_FILE" ;;
   shell) podman exec -it -u "$CMK_SITE" "$CONTAINER" bash -l ;;
-  *) sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

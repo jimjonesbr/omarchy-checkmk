@@ -1,0 +1,8 @@
+<<<check_mk>>>
+Version: 2.5.0p15
+AgentOS: linux
+<<<local>>>
+0 "CPU load" load1=0.40;2;4|load5=0.40;2;4|load15=0.40;2;4 15 min load: 0.40 at 2 cores
+0 "Memory" mem_used_percent=45.3;80;90 RAM used: 45.3% of 16 GiB
+2 "Filesystem /" fs_used_percent=91.2;80;90 91.2% used of 100 GiB
+2 "HTTPS certificate" days_left=3;30;7 Certificate expires in 3 days (staging.example.com)

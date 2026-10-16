@@ -28,6 +28,9 @@ function parseStatus(text) {
     // Before the first successful poll there are no services yet
     if (!Array.isArray(status.services)) status.services = []
     if (!Array.isArray(status.hosts)) status.hosts = []
+    if (!Array.isArray(status.servers)) status.servers = []
+    // Status files of the single server version know nothing about reachability
+    if (status.reachable === undefined) status.reachable = status.ok === true
     if (!status.counts) status.counts = { ok: 0, warn: 0, crit: 0, unknown: 0, unhandled: 0 }
     return status
   } catch (e) {}
@@ -60,17 +63,37 @@ function summary(status) {
   if (c.unknown) parts.push(c.unknown + " UNKNOWN")
   if (c.warn) parts.push(c.warn + " WARN")
   var text = parts.length ? parts.join(", ") : "All " + (c.ok || 0) + " services OK"
-  if (!status.ok) text = "Checkmk unreachable: " + status.error + "\nLast known: " + text
+  var down = status.servers.filter(function(s) { return !s.ok }).map(function(s) { return s.name })
+  if (!status.reachable) text = "Checkmk unreachable: " + status.error + "\nLast known: " + text
+  else if (down.length) text += "\nUnreachable: " + down.join(", ")
   return text
 }
 
-function hostServices(services, host) {
-  return services.filter(function(s) { return s.host === host && !s.isHost })
+function hostServices(services, server, host) {
+  return services.filter(function(s) { return s.server === server && s.host === host && !s.isHost })
 }
 
-function findHost(hosts, name) {
-  for (var i = 0; i < hosts.length; i++) if (hosts[i].host === name) return hosts[i]
+// An empty server matches the first host of that name on any server
+function findHost(hosts, server, name) {
+  for (var i = 0; i < hosts.length; i++)
+    if (hosts[i].host === name && (!server || hosts[i].server === server)) return hosts[i]
   return null
+}
+
+// Configured servers joined with their state from the last poll
+function serverRows(configured, polled) {
+  return configured.map(function(c) {
+    var live = null
+    for (var i = 0; i < polled.length; i++) if (polled[i].id === c.id) live = polled[i]
+    return {
+      id: c.id, name: c.name, url: c.url, user: c.user,
+      polled: !!live,
+      ok: live ? live.ok : false,
+      error: live ? live.error : "",
+      hosts: live ? live.hosts : 0,
+      counts: live ? live.counts : null
+    }
+  })
 }
 
 // Non-zero counts of a host, worst first: [{state, count}]

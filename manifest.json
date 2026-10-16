@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jimjonesbr.checkmk",
   "name": "Checkmk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Jim Jones",
   "license": "MIT",
   "description": "Checkmk service states in the Omarchy bar, with desktop notifications on state changes.",

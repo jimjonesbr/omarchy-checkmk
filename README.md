@@ -1,8 +1,8 @@
 # Checkmk for Omarchy
 
 Bar widget for the Omarchy shell that shows the worst state of selected Checkmk
-services, lists the problems in a popup and sends a desktop notification
-whenever a service changes state.
+services, lists hosts and problems in a popup and sends a desktop notification
+whenever a service changes state. It watches any number of Checkmk servers.
 
 ## Setup
 
@@ -16,16 +16,19 @@ whenever a service changes state.
    omarchy plugin enable jimjonesbr.checkmk
    ```
 
-3. Click the (grey) icon in the bar. The panel opens the connection form: site URL,
-   user, secret and optional filters. *Test connection*, then *Save*. The gear icon
-   in the panel (or `s`) brings the form back later.
+3. Click the (grey) icon in the bar. The panel opens the form for a first server:
+   name, site URL, user, secret and optional filters. *Test connection*, then *Save*.
 
-The settings are stored in `~/.config/omarchy-checkmk/config`, the secret in the
-desktop keyring (Secret Service, e.g. gnome-keyring, label "Checkmk user@url").
-Without a keyring it goes to `~/.config/omarchy-checkmk/secret`, readable only by
-you. The widget hands the secret to `bin/checkmk-config` over stdin, so it never
-shows up in the process list. Editing the config file by hand still works, see
-`config.example`.
+More servers are added under the gear icon in the panel (or `s`): the server list
+shows each server with its state, `enter` edits one, `n` adds one, `x` twice
+removes one.
+
+The servers are stored in `~/.config/omarchy-checkmk/servers.json` (see
+`servers.example.json`), the secrets in the desktop keyring (Secret Service, e.g.
+gnome-keyring, label "Checkmk user@url"). Without a keyring a secret goes to
+`~/.config/omarchy-checkmk/secrets/<id>`, readable only by you. The widget hands
+secrets to `bin/checkmk-config` over stdin, so they never show up in the process
+list. The single server `config` file of earlier versions is migrated on first use.
 
 ## Usage
 
@@ -34,7 +37,7 @@ shows up in the process list. Editing the config file by hand still works, see
 | normal color | no unhandled problems                           |
 | amber        | worst unhandled problem is WARN (orange: UNKNOWN) |
 | red          | at least one unhandled CRIT                     |
-| dimmed       | Checkmk not reachable, showing last known state |
+| dimmed       | no server reachable, showing last known state   |
 
 Left click opens the panel, middle click polls now, right click opens the Checkmk web UI.
 
@@ -45,6 +48,10 @@ The panel has two tabs:
   host to see all of its services.
 - **Problems**: every service that is not OK, worst first, across all hosts.
 
+With more than one server the hosts are grouped by server. A server that does not
+answer keeps its last known state, dimmed and marked as unreachable, and you get a
+notification when it goes away and when it comes back.
+
 Selecting a service shows its full output and its metrics (value, warn and crit
 levels); pressing enter again opens it in Checkmk.
 
@@ -52,17 +59,18 @@ levels); pressing enter again opens it in Checkmk.
 |---------------------|-------------------------------------------------|
 | `j` / `k`           | move the selection                              |
 | `enter` / `l`       | open host, show service details, open in Checkmk |
-| `h` / `backspace`   | back to the host list                           |
+| `h` / `backspace`   | back                                            |
 | `1` / `2`           | hosts / problems tab                            |
 | `a`                 | problems only / all services                    |
 | `o`                 | open the selected host or service in Checkmk    |
 | `r`                 | poll now                                        |
+| `s`                 | server list                                     |
 | `esc`               | close                                           |
 
 From a terminal or a Hyprland keybinding:
 
 ```bash
-omarchy-shell checkmk show hosts          # or: problems, host:vm-db03
+omarchy-shell checkmk show hosts          # or: problems, servers, host:vm-db03, host:staging/stg-web01
 omarchy-shell checkmk toggle
 omarchy-shell checkmk refresh
 ```
@@ -79,10 +87,11 @@ heart-pulse) can be changed in the widget settings (`refreshIntervalSec`,
 
 | Path               | What                                                       |
 |--------------------|------------------------------------------------------------|
-| `bin/checkmk-poll` | queries the REST API, writes `~/.cache/omarchy-checkmk/status.json`, notifies |
-| `BarWidget.qml`    | bar icon, runs the poller on a timer, watches the status file |
-| `Panel.qml`        | popup with the list of problems                            |
-| `deploy-checkmk/`  | disposable Checkmk test instance with fake hosts (podman)  |
+| `bin/checkmk-poll`   | queries all servers, writes `~/.cache/omarchy-checkmk/status.json`, notifies |
+| `bin/checkmk-config` | lists, tests, saves and removes servers, keeps the secrets  |
+| `BarWidget.qml`      | bar icon, runs the poller on a timer, watches the status file |
+| `Panel.qml`          | popup with hosts, problems and the server settings          |
+| `deploy-checkmk/`    | disposable Checkmk test instances with fake hosts (podman)  |
 
 ## Test instance
 
@@ -90,4 +99,12 @@ heart-pulse) can be changed in the widget settings (`refreshIntervalSec`,
 deploy-checkmk/checkmk.sh up          # Checkmk on http://localhost:8080/cmk/ (cmkadmin/cmkadmin)
 deploy-checkmk/lab-hosts.sh sync      # fake VMs from deploy-checkmk/fixtures/*.txt
 deploy-checkmk/lab-hosts.sh state vm-db02 "Replication Check - pg-hr" 2
+
+# A second, independent instance with the hosts in deploy-checkmk/fixtures-staging/
+export CMK_LAB=staging CMK_WEB_PORT=8081 CMK_AGENT_PORT=8001
+deploy-checkmk/checkmk.sh up          # http://localhost:8081/cmk/
+deploy-checkmk/lab-hosts.sh sync
 ```
+
+Each instance creates the read-only API user `omarchy`; its secret is in
+`deploy-checkmk/omarchy.secret` (`omarchy-staging.secret` for the second one).

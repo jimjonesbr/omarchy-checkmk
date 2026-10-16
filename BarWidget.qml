@@ -22,7 +22,8 @@ BarWidget {
   property var status: null
   property int now: Math.floor(Date.now() / 1000)
 
-  readonly property bool reachable: !!status && status.ok === true
+  // At least one server answered; the others show up as unreachable in the panel
+  readonly property bool reachable: !!status && status.reachable === true
   readonly property bool unconfigured: !!status && status.unconfigured === true
   readonly property int worst: status && !status.unconfigured ? (status.worst || 0) : 0
   readonly property color stateColor: Model.stateColor(worst, bar ? bar.barForeground : Color.foreground,

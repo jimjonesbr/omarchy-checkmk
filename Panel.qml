@@ -14,9 +14,10 @@ Panel {
   // The BarWidget that owns the data. The bar identifies popouts by that widget.
   property var hostWidget: null
 
-  // "hosts", "problems", "host" (the services of currentHost) or "setup"
+  // "hosts", "problems", "host" (the services of currentHost), "servers" or "edit"
   property string view: "hosts"
-  property string viewBeforeSetup: "hosts"
+  property string mainView: "hosts"
+  property string currentServer: ""
   property string currentHost: ""
   property bool showAll: false
   property int cursor: 0
@@ -25,13 +26,16 @@ Panel {
 
   readonly property var status: hostWidget ? hostWidget.status : null
   readonly property var services: status ? status.services : []
-  readonly property var hosts: status && status.hosts ? status.hosts : []
-  readonly property var hostInfo: Model.findHost(hosts, currentHost)
-  readonly property bool hostRows: view === "hosts"
+  readonly property var hosts: status ? status.hosts : []
+  readonly property var polledServers: status ? status.servers : []
+  readonly property bool multiServer: polledServers.length > 1
+  readonly property var hostInfo: Model.findHost(hosts, currentServer, currentHost)
   readonly property bool unconfigured: !!status && status.unconfigured === true
-  readonly property var rows: view === "setup" ? []
+  readonly property bool settingsView: view === "servers" || view === "edit"
+  readonly property var rows: view === "edit" ? []
+    : view === "servers" ? Model.serverRows(configured, polledServers)
     : view === "hosts" ? hosts
-    : view === "host" ? Model.hostServices(services, currentHost)
+    : view === "host" ? Model.hostServices(services, currentServer, currentHost)
     : (showAll ? services : Model.problems(services, true))
   readonly property int now: hostWidget ? hostWidget.now : 0
   readonly property color fg: bar ? bar.foreground : Color.foreground
@@ -40,39 +44,178 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   function colorFor(state) { return Model.stateColor(state, fg, urgent) }
-  // In the host list OK is green, like in Checkmk
+  // In the host and server lists OK is green, like in Checkmk
   function hostColorFor(state) { return Model.stateColor(state, fg, urgent, Model.OK_COLOR) }
 
   function open() {
     cursor = 0
     root.controller.show()
-    if (unconfigured) showSetup()
+    if (unconfigured) showEdit("")
     else if (hostWidget) hostWidget.refresh()
   }
 
-  // ---- Connection setup. The helper keeps the secret in the desktop keyring.
-  property var config: ({})
+  // "hosts", "problems", "servers", "host:NAME" or "host:SERVER/NAME"
+  function show(name) {
+    name = String(name || "")
+    if (name.indexOf("host:") === 0) {
+      var target = name.slice(5)
+      var slash = target.indexOf("/")
+      var info = slash > 0 ? Model.findHost(hosts, target.slice(0, slash), target.slice(slash + 1))
+        : Model.findHost(hosts, "", target)
+      if (info) openHost(info.server, info.host)
+    } else if (name === "hosts" || name === "problems") {
+      setView(name)
+    } else if (name === "servers") {
+      showServers()
+    }
+    if (!opened) open()
+  }
+
+  function switchPanel(direction) {
+    if (bar && typeof bar.switchPanelFrom === "function") return bar.switchPanelFrom(hostWidget || root, direction)
+    return false
+  }
+
+  function setView(name) {
+    if (view === name) return
+    if (name === "hosts" || name === "problems") mainView = name
+    view = name
+    cursor = 0
+    expanded = ""
+    confirmDelete = ""
+    scroll.contentY = 0
+    if (name !== "edit") keyCatcher.forceActiveFocus()
+  }
+
+  function openHost(server, host) {
+    currentServer = server
+    currentHost = host
+    setView("host")
+  }
+
+  function selectWhere(test) {
+    for (var i = 0; i < rows.length; i++) if (test(rows[i])) { cursor = i; break }
+    Qt.callLater(ensureVisible)
+  }
+
+  // One level up: host -> hosts, servers -> hosts or problems, edit -> servers
+  function back() {
+    if (view === "host") {
+      var server = currentServer, host = currentHost
+      setView("hosts")
+      selectWhere(function(r) { return r.server === server && r.host === host })
+    } else if (view === "servers") {
+      setView(mainView)
+    } else if (view === "edit") {
+      if (unconfigured) return
+      var id = editId
+      showServers()
+      selectWhere(function(r) { return r.id === id })
+    }
+  }
+
+  function rowKey(row) { return row.server + "\u0000" + row.host + "\u0000" + row.service }
+
+  function repeaterForView() {
+    if (view === "hosts") return hostRepeater
+    if (view === "servers") return serverRepeater
+    return serviceRepeater
+  }
+
+  function moveCursor(dy) {
+    if (rows.length === 0) return
+    cursor = Math.max(0, Math.min(rows.length - 1, cursor + dy))
+    confirmDelete = ""
+    // Moving the cursor collapses the expanded service, unless it is the one selected
+    if (expanded !== "" && expanded !== rowKey(rows[cursor])) expanded = ""
+    ensureVisible()
+  }
+
+  function ensureVisible() {
+    var item = repeaterForView().itemAt(cursor)
+    if (!item) return
+    var y = item.mapToItem(column, 0, 0).y
+    if (y < scroll.contentY) scroll.contentY = y
+    else if (y + item.height > scroll.contentY + scroll.height) scroll.contentY = y + item.height - scroll.height
+  }
+
+  function moveSideways(dx) {
+    if (dx < 0) {
+      if (view === "hosts" || view === "problems") setView("hosts")
+      else back()
+    } else if (view === "hosts" || view === "servers") {
+      activate(cursor)
+    }
+  }
+
+  // Enter: open a host or server, expand a service, or open an expanded service in Checkmk
+  function activate(index) {
+    var row = rows[index]
+    if (!row) return
+    if (view === "hosts") {
+      openHost(row.server, row.host)
+    } else if (view === "servers") {
+      showEdit(row.id)
+    } else if (expanded === rowKey(row)) {
+      openInCheckmk(row.link)
+    } else {
+      expanded = rowKey(row)
+      Qt.callLater(ensureVisible)
+    }
+  }
+
+  function openInCheckmk(url) {
+    if (!hostWidget) return
+    hostWidget.openWebUi(url)
+    close()
+  }
+
+  onRowsChanged: {
+    cursor = Math.min(cursor, Math.max(0, rows.length - 1))
+    // The host disappeared, e.g. after removing it or its server
+    if (view === "host" && status && !hostInfo) setView("hosts")
+  }
+
+  // ---- Servers. The helper keeps the secrets in the desktop keyring.
+  property var configured: []
+  property string editId: ""
+  property string confirmDelete: ""
   property bool setupBusy: false
   property bool setupOk: false
   property string setupMessage: ""
-
-  function showSetup() {
-    if (view !== "setup") viewBeforeSetup = view
-    setupMessage = ""
-    setupOk = false
-    secretField.text = ""
-    setView("setup")
-    configGetProc.running = true
-    Qt.callLater(function() { urlField.forceActiveFocus() })
+  readonly property var editServer: {
+    for (var i = 0; i < configured.length; i++) if (configured[i].id === editId) return configured[i]
+    return null
   }
 
-  function leaveSetup() {
-    setView(viewBeforeSetup === "setup" ? "hosts" : viewBeforeSetup)
-    keyCatcher.forceActiveFocus()
+  function showServers() {
+    setView("servers")
+    listProc.running = true
+  }
+
+  // An empty id adds a server
+  function showEdit(id) {
+    editId = id
+    setupMessage = ""
+    setupOk = false
+    confirmDelete = ""
+    var s = null
+    for (var i = 0; i < configured.length; i++) if (configured[i].id === id) s = configured[i]
+    nameField.text = s ? s.name : ""
+    urlField.text = s ? s.url : ""
+    userField.text = s ? s.user : ""
+    secretField.text = ""
+    serviceFilterField.text = s ? (s.serviceFilter || "") : ""
+    hostFilterField.text = s ? (s.hostFilter || "") : ""
+    insecureToggle.checked = !!s && s.insecure === true
+    setView("edit")
+    Qt.callLater(function() { (id ? nameField : urlField).forceActiveFocus() })
   }
 
   function setupInput() {
     return JSON.stringify({
+      id: editId,
+      name: nameField.text.trim(),
       url: urlField.text.trim(),
       user: userField.text.trim(),
       secret: secretField.text,
@@ -92,18 +235,30 @@ Panel {
     setupProc.running = true
   }
 
+  // A first request arms the deletion, the second one carries it out
+  function requestDelete(id) {
+    if (!id || deleteProc.running || !hostWidget) return
+    if (confirmDelete !== id) {
+      confirmDelete = id
+      return
+    }
+    confirmDelete = ""
+    deleteProc.command = [hostWidget.configTool, "delete", id]
+    deleteProc.running = true
+  }
+
+  function configChanged() {
+    listProc.running = true
+    if (hostWidget) hostWidget.refresh()
+  }
+
   Process {
-    id: configGetProc
-    command: root.hostWidget ? [root.hostWidget.configTool, "get"] : []
+    id: listProc
+    command: root.hostWidget ? [root.hostWidget.configTool, "list"] : []
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        try { root.config = JSON.parse(text) } catch (e) { root.config = {} }
-        urlField.text = root.config.url || ""
-        userField.text = root.config.user || ""
-        serviceFilterField.text = root.config.serviceFilter || ""
-        hostFilterField.text = root.config.hostFilter || ""
-        insecureToggle.checked = root.config.insecure === true
+        try { root.configured = JSON.parse(text) } catch (e) { root.configured = [] }
       }
     }
   }
@@ -127,105 +282,28 @@ Panel {
         root.setupOk = !!result && result.ok === true
         root.setupMessage = result ? result.message : "The helper script failed"
         if (root.setupOk && setupProc.action === "save") {
+          root.editId = result.id
           secretField.text = ""
-          configGetProc.running = true
-          if (root.hostWidget) root.hostWidget.refresh()
-          root.leaveSetup()
+          root.configChanged()
+          root.showServers()
+          Qt.callLater(function() { root.selectWhere(function(r) { return r.id === result.id }) })
         }
       }
     }
   }
 
-  // "hosts", "problems" or "host:NAME"
-  function show(name) {
-    name = String(name || "")
-    if (name.indexOf("host:") === 0) openHost(name.slice(5))
-    else if (name === "hosts" || name === "problems") setView(name)
-    if (!opened) open()
-  }
-
-  function switchPanel(direction) {
-    if (bar && typeof bar.switchPanelFrom === "function") return bar.switchPanelFrom(hostWidget || root, direction)
-    return false
-  }
-
-  function setView(name) {
-    if (view === name) return
-    view = name
-    cursor = 0
-    expanded = ""
-    scroll.contentY = 0
-  }
-
-  function openHost(name) {
-    currentHost = name
-    setView("host")
-  }
-
-  // Back from a host to the host list, keeping that host selected
-  function back() {
-    if (view !== "host") return
-    var name = currentHost
-    setView("hosts")
-    for (var i = 0; i < hosts.length; i++) if (hosts[i].host === name) cursor = i
-    Qt.callLater(ensureVisible)
-  }
-
-  function rowKey(row) { return row.host + "\u0000" + row.service }
-
-  function moveCursor(dy) {
-    if (rows.length === 0) return
-    cursor = Math.max(0, Math.min(rows.length - 1, cursor + dy))
-    // Moving the cursor collapses the expanded service, unless it is the one selected
-    if (!hostRows && expanded !== rowKey(rows[cursor])) expanded = ""
-    ensureVisible()
-  }
-
-  function ensureVisible() {
-    var item = (hostRows ? hostRepeater : serviceRepeater).itemAt(cursor)
-    if (!item) return
-    var y = item.mapToItem(column, 0, 0).y
-    if (y < scroll.contentY) scroll.contentY = y
-    else if (y + item.height > scroll.contentY + scroll.height) scroll.contentY = y + item.height - scroll.height
-  }
-
-  function moveSideways(dx) {
-    if (dx < 0) {
-      if (view === "host") back()
-      else setView("hosts")
-    } else if (view === "hosts") {
-      var row = rows[cursor]
-      if (row) openHost(row.host)
-    } else if (view === "host") {
-      setView("problems")
+  Process {
+    id: deleteProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.configChanged()
+        if (root.view === "edit") root.showServers()
+      }
     }
   }
 
-  // Enter: open a host, expand a service, or open an expanded service in Checkmk
-  function activate(index) {
-    var row = rows[index]
-    if (!row) return
-    if (hostRows) {
-      openHost(row.host)
-    } else if (expanded === rowKey(row)) {
-      openInCheckmk(row.link)
-    } else {
-      expanded = rowKey(row)
-      Qt.callLater(ensureVisible)
-    }
-  }
-
-  function openInCheckmk(url) {
-    if (!hostWidget) return
-    hostWidget.openWebUi(url)
-    close()
-  }
-
-  onRowsChanged: {
-    cursor = Math.min(cursor, Math.max(0, rows.length - 1))
-    // The host disappeared, e.g. after removing it from Checkmk
-    if (view === "host" && status && !hostInfo) setView("hosts")
-  }
+  Component.onCompleted: listProc.running = true
 
   component FieldLabel: Row {
     property string label: ""
@@ -257,28 +335,30 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(560))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(680))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(700))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // The form fields need the keys themselves
+      blocked: root.view === "edit"
       onMoveRequested: function(dx, dy) {
         if (dy !== 0) root.moveCursor(dy)
         else root.moveSideways(dx)
       }
       onActivateRequested: root.activate(root.cursor)
-      // The form fields need the keys themselves
-      blocked: root.view === "setup"
       onCloseRequested: root.close()
+      onDeleteRequested: if (root.view === "servers" && root.rows[root.cursor]) root.requestDelete(root.rows[root.cursor].id)
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
-        if (t === "s") root.showSetup()
+        if (t === "s") root.view === "servers" ? root.back() : root.showServers()
+        else if (t === "n" && root.view === "servers") root.showEdit("")
         else if (t === "1") root.setView("hosts")
         else if (t === "2") root.setView("problems")
         else if (t === "\b") root.back()
         else if (t === "a" && root.view === "problems") { root.showAll = !root.showAll; root.cursor = 0 }
         else if (t === "r" && root.hostWidget) root.hostWidget.refresh()
-        else if (t === "o") {
+        else if (t === "o" && !root.settingsView) {
           var row = root.rows[root.cursor]
           root.openInCheckmk(row && row.link ? row.link : "")
         }
@@ -298,7 +378,7 @@ Panel {
           width: scroll.width
           spacing: Style.space(10)
 
-          // ---- Header: title, last update or error
+          // ---- Header: title, last update, settings
           Item {
             width: parent.width
             height: title.implicitHeight
@@ -317,7 +397,7 @@ Panel {
               anchors.right: parent.right
               anchors.verticalCenter: title.verticalCenter
               text: "\u{f0493}"
-              color: root.view === "setup" ? Color.accent : (gearMouse.containsMouse ? root.fg : root.dim)
+              color: root.settingsView ? Color.accent : (gearMouse.containsMouse ? root.fg : root.dim)
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
 
@@ -327,7 +407,7 @@ Panel {
                 anchors.margins: -Style.space(4)
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.view === "setup" ? root.leaveSetup() : root.showSetup()
+                onClicked: root.settingsView ? root.setView(root.mainView) : root.showServers()
               }
             }
 
@@ -337,28 +417,30 @@ Panel {
               anchors.rightMargin: Style.space(12)
               anchors.verticalCenter: title.verticalCenter
               textFormat: Text.PlainText
-              text: !root.status ? "waiting for first poll"
-                : (root.status.ok ? "" : "unreachable · ") + "updated " + Model.age(root.now - root.status.checked) + " ago"
-              color: root.status && !root.status.ok ? root.urgent : root.dim
+              text: !root.status ? "waiting for first poll" : "updated " + Model.age(root.now - root.status.checked) + " ago"
+              color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
             }
           }
 
-          Text {
-            visible: !!root.status && !root.status.ok && !root.unconfigured && root.view !== "setup"
-            width: parent.width
-            wrapMode: Text.Wrap
-            textFormat: Text.PlainText
-            text: root.status ? root.status.error : ""
-            color: root.urgent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
+          // ---- Servers that did not answer, their data is the last known
+          Repeater {
+            model: root.settingsView ? [] : root.polledServers.filter(function(s) { return !s.ok })
+            Text {
+              width: column.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: (root.multiServer ? modelData.name + " unreachable: " : "Unreachable: ") + modelData.error
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
           }
 
           // ---- Counts per state
           Row {
-            visible: root.view !== "setup"
+            visible: !root.settingsView
             spacing: Style.space(18)
             Repeater {
               model: [
@@ -391,27 +473,34 @@ Panel {
 
           PanelSeparator { foreground: root.fg }
 
-          // ---- Tabs, or the way back from a host
+          // ---- Tabs, or the way back
           Row {
-            visible: root.view !== "setup"
             spacing: Style.space(16)
 
             Repeater {
               model: root.view === "host"
-                ? [{ id: "back", label: "‹ HOSTS" }, { id: "host", label: root.currentHost.toUpperCase() }]
+                ? [{ id: "back", label: "‹ HOSTS" },
+                   { id: "title", label: root.currentHost.toUpperCase()
+                     + (root.multiServer && root.hostInfo ? " · " + root.hostInfo.serverName.toUpperCase() : "") }]
+                : root.view === "servers"
+                ? [{ id: "back", label: "‹ BACK" }, { id: "title", label: "SERVERS " + root.configured.length }]
+                : root.view === "edit"
+                ? (root.unconfigured ? [{ id: "title", label: "ADD A CHECKMK SERVER" }]
+                   : [{ id: "back", label: "‹ SERVERS" },
+                      { id: "title", label: root.editServer ? root.editServer.name.toUpperCase() : "NEW SERVER" }])
                 : [{ id: "hosts", label: "HOSTS " + root.hosts.length },
                    { id: "problems", label: (root.showAll ? "ALL SERVICES " + root.services.length
                      : "PROBLEMS " + Model.problems(root.services, true).length) }]
 
               PanelSectionHeader {
-                readonly property bool current: modelData.id === root.view
+                readonly property bool current: modelData.id === root.view || modelData.id === "title"
                 text: modelData.label
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 color: current ? root.fg : Qt.darker(root.fg, 1.9)
 
                 Rectangle {
-                  visible: parent.current && modelData.id !== "host"
+                  visible: modelData.id === root.view
                   anchors.top: parent.bottom
                   anchors.topMargin: Style.space(3)
                   width: parent.width
@@ -421,7 +510,7 @@ Panel {
 
                 MouseArea {
                   anchors.fill: parent
-                  enabled: modelData.id !== "host"
+                  enabled: modelData.id !== "title"
                   cursorShape: Qt.PointingHandCursor
                   onClicked: modelData.id === "back" ? root.back() : root.setView(modelData.id)
                 }
@@ -430,7 +519,7 @@ Panel {
           }
 
           Text {
-            visible: root.rows.length === 0 && root.view !== "setup"
+            visible: root.rows.length === 0 && !root.settingsView
             textFormat: Text.PlainText
             text: !root.status ? "No data yet" : root.view === "hosts" ? "No hosts" : "All " + root.services.length + " services OK"
             color: root.dim
@@ -438,90 +527,129 @@ Panel {
             font.pixelSize: Style.font.body
           }
 
-          // ---- Host list: one row per host, coloured by its worst service
+          // ---- Host list: one row per host, coloured by its worst service, grouped by server
           Column {
-            visible: root.hostRows
+            visible: root.view === "hosts"
             width: parent.width
             spacing: Style.space(2)
 
             Repeater {
               id: hostRepeater
-              model: root.hostRows ? root.rows : []
+              model: root.view === "hosts" ? root.rows : []
 
-              Rectangle {
-                id: hostRow
+              Column {
+                id: hostEntry
                 required property var modelData
                 required property int index
-                readonly property bool selected: index === root.cursor
-
+                readonly property bool firstOfServer: index === 0 || root.rows[index - 1].server !== modelData.server
+                readonly property var serverInfo: {
+                  for (var i = 0; i < root.polledServers.length; i++)
+                    if (root.polledServers[i].id === modelData.server) return root.polledServers[i]
+                  return null
+                }
                 width: parent.width
-                height: hostName.implicitHeight + Style.space(14)
-                radius: Math.min(6, Style.cornerRadius)
-                color: selected || hostMouse.containsMouse ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
 
-                Rectangle {
-                  id: hostDot
-                  x: Style.space(10)
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(10)
-                  height: width
-                  radius: width / 2
-                  color: root.hostColorFor(hostRow.modelData.state)
-                }
-
-                Text {
-                  id: hostName
-                  anchors.left: hostDot.right
-                  anchors.leftMargin: Style.space(10)
-                  anchors.right: hostCounts.left
-                  anchors.rightMargin: Style.space(8)
-                  anchors.verticalCenter: parent.verticalCenter
-                  elide: Text.ElideRight
-                  textFormat: Text.PlainText
-                  text: hostRow.modelData.host + (hostRow.modelData.down ? "  DOWN" : "")
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  font.bold: true
-                }
-
+                // Server heading, only with more than one server
                 Row {
-                  id: hostCounts
-                  anchors.right: chevron.left
-                  anchors.rightMargin: Style.space(10)
-                  anchors.verticalCenter: parent.verticalCenter
-                  spacing: Style.space(10)
+                  visible: root.multiServer && hostEntry.firstOfServer
+                  spacing: Style.space(8)
+                  topPadding: hostEntry.index === 0 ? 0 : Style.space(10)
+                  bottomPadding: Style.space(4)
 
-                  Repeater {
-                    model: Model.hostCounts(hostRow.modelData)
-                    Text {
-                      textFormat: Text.PlainText
-                      text: modelData.count + " " + Model.stateName(modelData.state)
-                      color: modelData.state === 0 ? root.dim : root.colorFor(modelData.state)
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.bodySmall
-                      font.bold: modelData.state !== 0
-                    }
+                  Text {
+                    id: serverHeading
+                    textFormat: Text.PlainText
+                    text: hostEntry.modelData.serverName.toUpperCase()
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1
+                  }
+                  Text {
+                    anchors.baseline: serverHeading.baseline
+                    visible: !!hostEntry.serverInfo && !hostEntry.serverInfo.ok
+                    textFormat: Text.PlainText
+                    text: "unreachable, last known state"
+                    color: root.urgent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
                   }
                 }
 
-                Text {
-                  id: chevron
-                  anchors.right: parent.right
-                  anchors.rightMargin: Style.space(10)
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: "›"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.title
-                }
+                Rectangle {
+                  id: hostRow
+                  readonly property bool selected: hostEntry.index === root.cursor
+                  width: parent.width
+                  height: hostName.implicitHeight + Style.space(14)
+                  radius: Math.min(6, Style.cornerRadius)
+                  color: selected || hostMouse.containsMouse ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
+                  opacity: hostEntry.modelData.stale ? 0.6 : 1
 
-                MouseArea {
-                  id: hostMouse
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.openHost(hostRow.modelData.host)
+                  Rectangle {
+                    id: hostDot
+                    x: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(10)
+                    height: width
+                    radius: width / 2
+                    color: root.hostColorFor(hostEntry.modelData.state)
+                  }
+
+                  Text {
+                    id: hostName
+                    anchors.left: hostDot.right
+                    anchors.leftMargin: Style.space(10)
+                    anchors.right: hostCounts.left
+                    anchors.rightMargin: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: hostEntry.modelData.host + (hostEntry.modelData.down ? "  DOWN" : "")
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+
+                  Row {
+                    id: hostCounts
+                    anchors.right: chevron.left
+                    anchors.rightMargin: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(10)
+
+                    Repeater {
+                      model: Model.hostCounts(hostEntry.modelData)
+                      Text {
+                        textFormat: Text.PlainText
+                        text: modelData.count + " " + Model.stateName(modelData.state)
+                        color: modelData.state === 0 ? root.dim : root.colorFor(modelData.state)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        font.bold: modelData.state !== 0
+                      }
+                    }
+                  }
+
+                  Text {
+                    id: chevron
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "›"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title
+                  }
+
+                  MouseArea {
+                    id: hostMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openHost(hostEntry.modelData.server, hostEntry.modelData.host)
+                  }
                 }
               }
             }
@@ -529,13 +657,13 @@ Panel {
 
           // ---- Service list: problems, all services, or the services of one host
           Column {
-            visible: !root.hostRows
+            visible: root.view === "problems" || root.view === "host"
             width: parent.width
             spacing: Style.space(2)
 
             Repeater {
               id: serviceRepeater
-              model: root.hostRows ? [] : root.rows
+              model: root.view === "problems" || root.view === "host" ? root.rows : []
 
               Rectangle {
                 id: row
@@ -548,7 +676,7 @@ Panel {
                 height: rowContent.implicitHeight + Style.space(12)
                 radius: Math.min(6, Style.cornerRadius)
                 color: selected || rowMouse.containsMouse ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
-                opacity: modelData.handled ? 0.55 : 1
+                opacity: modelData.handled || modelData.stale ? 0.55 : 1
 
                 Text {
                   id: stateTag
@@ -605,6 +733,7 @@ Panel {
                       textFormat: Text.PlainText
                       text: Model.age(root.now - row.modelData.since)
                         + (row.modelData.handled ? " · handled" : "")
+                        + (row.modelData.stale ? " · stale" : "")
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
@@ -615,7 +744,7 @@ Panel {
                   Text {
                     visible: root.view !== "host"
                     textFormat: Text.PlainText
-                    text: row.modelData.host
+                    text: row.modelData.host + (root.multiServer ? " · " + row.modelData.serverName : "")
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -701,16 +830,146 @@ Panel {
             }
           }
 
-          // ---- Connection setup
+          // ---- Server list
           Column {
-            visible: root.view === "setup"
+            visible: root.view === "servers"
+            width: parent.width
+            spacing: Style.space(2)
+
+            Repeater {
+              id: serverRepeater
+              model: root.view === "servers" ? root.rows : []
+
+              Rectangle {
+                id: serverRow
+                required property var modelData
+                required property int index
+                readonly property bool selected: index === root.cursor
+                readonly property bool confirming: root.confirmDelete === modelData.id
+
+                width: parent.width
+                height: serverContent.implicitHeight + Style.space(14)
+                radius: Math.min(6, Style.cornerRadius)
+                color: selected || serverMouse.containsMouse ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
+
+                MouseArea {
+                  id: serverMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.showEdit(serverRow.modelData.id)
+                }
+
+                Rectangle {
+                  id: serverDot
+                  x: Style.space(10)
+                  y: Style.space(7) + (serverName.implicitHeight - height) / 2
+                  width: Style.space(10)
+                  height: width
+                  radius: width / 2
+                  color: !serverRow.modelData.polled ? root.dim
+                    : serverRow.modelData.ok ? Model.OK_COLOR : root.urgent
+                }
+
+                Column {
+                  id: serverContent
+                  anchors.left: serverDot.right
+                  anchors.leftMargin: Style.space(10)
+                  anchors.right: serverActions.left
+                  anchors.rightMargin: Style.space(10)
+                  y: Style.space(7)
+                  spacing: Style.space(2)
+
+                  Text {
+                    id: serverName
+                    width: parent.width
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: serverRow.modelData.name
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+                  Text {
+                    width: parent.width
+                    elide: Text.ElideMiddle
+                    textFormat: Text.PlainText
+                    text: serverRow.modelData.user + " @ " + serverRow.modelData.url
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    visible: serverRow.modelData.polled && !serverRow.modelData.ok
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                    text: serverRow.modelData.error
+                    color: root.urgent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                }
+
+                Row {
+                  id: serverActions
+                  anchors.right: parent.right
+                  anchors.rightMargin: Style.space(10)
+                  y: Style.space(7)
+                  spacing: Style.space(12)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: !serverRow.modelData.polled ? "not polled yet"
+                      : serverRow.modelData.hosts + (serverRow.modelData.hosts === 1 ? " host" : " hosts")
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    visible: serverRow.selected || serverRow.confirming
+                    text: serverRow.confirming ? "remove? x again" : "remove"
+                    color: serverRow.confirming ? root.urgent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+
+                    MouseArea {
+                      anchors.fill: parent
+                      anchors.margins: -Style.space(4)
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.requestDelete(serverRow.modelData.id)
+                    }
+                  }
+                }
+              }
+            }
+
+            Button {
+              text: "+ Add server"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onClicked: root.showEdit("")
+            }
+          }
+
+          // ---- Add or edit a server
+          Column {
+            visible: root.view === "edit"
             width: parent.width
             spacing: Style.space(8)
 
-            PanelSectionHeader {
-              text: "CHECKMK SERVER"
+            FieldLabel { label: "Name"; hint: "shown in the panel, e.g. Production" }
+            TextField {
+              id: nameField
+              width: parent.width
+              placeholderText: "defaults to the host name of the URL"
               foreground: root.fg
-              fontFamily: root.fontFamily
+              font.family: root.fontFamily
+              KeyNavigation.tab: urlField
+              Keys.onEscapePressed: root.back()
+              onAccepted: root.runSetup("test")
             }
 
             FieldLabel { label: "Site URL"; hint: "everything before /check_mk/" }
@@ -721,7 +980,7 @@ Panel {
               foreground: root.fg
               font.family: root.fontFamily
               KeyNavigation.tab: userField
-              Keys.onEscapePressed: root.leaveSetup()
+              Keys.onEscapePressed: root.back()
               onAccepted: root.runSetup("test")
             }
 
@@ -733,7 +992,7 @@ Panel {
               foreground: root.fg
               font.family: root.fontFamily
               KeyNavigation.tab: secretField
-              Keys.onEscapePressed: root.leaveSetup()
+              Keys.onEscapePressed: root.back()
               onAccepted: root.runSetup("test")
             }
 
@@ -742,13 +1001,14 @@ Panel {
               id: secretField
               width: parent.width
               password: true
-              placeholderText: root.config.secretStore === "keyring" ? "stored in the keyring, leave empty to keep"
-                : root.config.secretStore === "file" || root.config.secretStore === "config" ? "stored in a file, leave empty to keep"
+              placeholderText: !root.editServer ? ""
+                : root.editServer.secretStore === "keyring" ? "stored in the keyring, leave empty to keep"
+                : root.editServer.secretStore === "file" ? "stored in a file, leave empty to keep"
                 : ""
               foreground: root.fg
               font.family: root.fontFamily
               KeyNavigation.tab: serviceFilterField
-              Keys.onEscapePressed: root.leaveSetup()
+              Keys.onEscapePressed: root.back()
               onAccepted: root.runSetup("test")
             }
 
@@ -760,7 +1020,7 @@ Panel {
               foreground: root.fg
               font.family: root.fontFamily
               KeyNavigation.tab: hostFilterField
-              Keys.onEscapePressed: root.leaveSetup()
+              Keys.onEscapePressed: root.back()
               onAccepted: root.runSetup("test")
             }
 
@@ -771,8 +1031,8 @@ Panel {
               placeholderText: "e.g. ^vm-db"
               foreground: root.fg
               font.family: root.fontFamily
-              KeyNavigation.tab: urlField
-              Keys.onEscapePressed: root.leaveSetup()
+              KeyNavigation.tab: nameField
+              Keys.onEscapePressed: root.back()
               onAccepted: root.runSetup("test")
             }
 
@@ -786,29 +1046,44 @@ Panel {
               onClicked: checked = !checked
             }
 
-            Row {
-              spacing: Style.space(8)
+            Item {
+              width: parent.width
+              height: formButtons.implicitHeight
+
+              Row {
+                id: formButtons
+                spacing: Style.space(8)
+
+                Button {
+                  text: "Test connection"
+                  bordered: true
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onClicked: root.runSetup("test")
+                }
+                Button {
+                  text: "Save"
+                  bordered: true
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onClicked: root.runSetup("save")
+                }
+                Button {
+                  visible: !root.unconfigured
+                  text: "Cancel"
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onClicked: root.back()
+                }
+              }
 
               Button {
-                text: "Test connection"
-                bordered: true
-                foreground: root.fg
+                visible: !!root.editServer
+                anchors.right: parent.right
+                text: root.confirmDelete === root.editId ? "Really remove?" : "Remove"
+                foreground: root.confirmDelete === root.editId ? root.urgent : root.dim
                 fontFamily: root.fontFamily
-                onClicked: root.runSetup("test")
-              }
-              Button {
-                text: "Save"
-                bordered: true
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onClicked: root.runSetup("save")
-              }
-              Button {
-                visible: !root.unconfigured
-                text: "Cancel"
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onClicked: root.leaveSetup()
+                onClicked: root.requestDelete(root.editId)
               }
             }
 
@@ -841,8 +1116,9 @@ Panel {
             width: parent.width
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
-            text: root.view === "setup" ? "tab next field · enter test · esc back"
-              : root.view === "hosts" ? "enter/l open host · 2 problems · o host in Checkmk · r refresh · s setup"
+            text: root.view === "edit" ? "tab next field · enter test · esc back"
+              : root.view === "servers" ? "enter edit · n add · x remove · h back"
+              : root.view === "hosts" ? "enter/l open host · 2 problems · o host in Checkmk · r refresh · s servers"
               : root.view === "host" ? "enter details, again opens Checkmk · h/backspace back · o open in Checkmk"
               : "enter details, again opens Checkmk · a " + (root.showAll ? "problems only" : "all services")
                 + " · 1 hosts · r refresh"

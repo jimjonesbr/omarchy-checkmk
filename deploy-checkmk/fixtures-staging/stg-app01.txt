@@ -1,0 +1,8 @@
+<<<check_mk>>>
+Version: 2.5.0p15
+AgentOS: linux
+<<<local>>>
+0 "CPU load" load1=2.10;4;8|load5=2.10;4;8|load15=2.10;4;8 15 min load: 2.10 at 4 cores
+0 "Memory" mem_used_percent=71.0;80;90 RAM used: 71.0% of 16 GiB
+0 "Filesystem /" fs_used_percent=62.5;80;90 62.5% used of 100 GiB
+0 "HTTP api" response_time=0.084;1;2 HTTP OK - 200 in 84 ms

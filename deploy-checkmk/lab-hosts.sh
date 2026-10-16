@@ -11,6 +11,9 @@
 #   ./lab-hosts.sh recheck [host]              check now instead of waiting a minute
 #
 # Example: ./lab-hosts.sh state vm-db02 "Replication Check - pg-hr" 0
+#
+# For a further instance started with CMK_LAB=<name>, set the same CMK_LAB and
+# CMK_WEB_PORT here; its fixtures are in fixtures-<name>/.
 
 set -euo pipefail
 
@@ -18,9 +21,10 @@ CMK_SITE="${CMK_SITE:-cmk}"
 CMK_PASSWORD="${CMK_PASSWORD:-cmkadmin}"
 CMK_WEB_PORT="${CMK_WEB_PORT:-8080}"
 
-CONTAINER="checkmk-lab"
+CMK_LAB="${CMK_LAB:-}"
+CONTAINER="checkmk-lab${CMK_LAB:+-$CMK_LAB}"
 FOLDER="lab"
-FIXTURES="$(dirname "$(realpath "$0")")/fixtures"
+FIXTURES="$(dirname "$(realpath "$0")")/fixtures${CMK_LAB:+-$CMK_LAB}"
 API="http://localhost:$CMK_WEB_PORT/$CMK_SITE/check_mk/api/1.0"
 RULE_DESCRIPTION="Lab: agent output from fixture files"
 
@@ -121,5 +125,5 @@ case "${1:-}" in
   sync) sync ;;
   state) shift; state "$@" ;;
   recheck) recheck "${2:-}" ;;
-  *) sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
