@@ -15,7 +15,7 @@ Panel {
   // The BarWidget that owns the data. The bar identifies popouts by that widget.
   property var hostWidget: null
 
-  // "hosts", "problems", "host" (the services of currentHost), "servers" or "edit"
+  // "hosts", "problems", "host" (the services of currentHost), "servers", "edit" or "unlock"
   property string view: "hosts"
   property string mainView: "hosts"
   property string currentServer: ""
@@ -32,12 +32,15 @@ Panel {
   readonly property bool multiServer: polledServers.length > 1
   readonly property var hostInfo: Model.findHost(hosts, currentServer, currentHost)
   readonly property bool unconfigured: !!status && status.unconfigured === true
-  readonly property bool settingsView: view === "servers" || view === "edit"
-  readonly property var rows: view === "edit" ? []
-    : view === "servers" ? Model.serverRows(configured, polledServers)
-    : view === "hosts" ? hosts
-    : view === "host" ? Model.hostServices(services, currentServer, currentHost)
-    : (showAll ? services : Model.problems(services, true))
+  readonly property bool settingsView: view === "servers" || view === "edit" || view === "unlock"
+  readonly property var lockedServers: polledServers.filter(function(s) { return s.locked })
+  // Each list has its own rows, so a list never sees another one's rows while the view changes
+  readonly property var serverRowsList: view === "servers" ? Model.serverRows(configured, polledServers) : []
+  readonly property var hostRowsList: view === "hosts" ? hosts : []
+  readonly property var serviceRowsList: view === "host" ? Model.hostServices(services, currentServer, currentHost)
+    : view === "problems" ? (showAll ? services : Model.problems(services, true))
+    : []
+  readonly property var rows: view === "servers" ? serverRowsList : view === "hosts" ? hostRowsList : serviceRowsList
   readonly property int now: hostWidget ? hostWidget.now : 0
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(fg, 1.4)
@@ -52,6 +55,8 @@ Panel {
     cursor = 0
     root.controller.show()
     if (unconfigured) showEdit("")
+    // Every server waits for its secret: ask right away
+    else if (status && !status.reachable && lockedServers.length > 0) showUnlock(lockedServers[0].id)
     else if (hostWidget) hostWidget.refresh()
   }
 
@@ -84,6 +89,8 @@ Panel {
       setView(name)
     } else if (name === "servers") {
       showServers()
+    } else if (name === "unlock" && lockedServers.length > 0) {
+      showUnlock(lockedServers[0].id)
     }
     if (!opened) open()
   }
@@ -101,7 +108,7 @@ Panel {
     expanded = ""
     confirmDelete = ""
     scroll.contentY = 0
-    if (name !== "edit") keyCatcher.forceActiveFocus()
+    if (name !== "edit" && name !== "unlock") keyCatcher.forceActiveFocus()
   }
 
   function openHost(server, host) {
@@ -123,6 +130,8 @@ Panel {
       selectWhere(function(r) { return r.server === server && r.host === host })
     } else if (view === "servers") {
       setView(mainView)
+    } else if (view === "unlock") {
+      setView(unlockReturn)
     } else if (view === "edit") {
       if (unconfigured) return
       var id = editId
@@ -311,6 +320,7 @@ Panel {
     serviceFilterField.text = s ? (s.serviceFilter || "") : ""
     hostFilterField.text = s ? (s.hostFilter || "") : ""
     insecureToggle.checked = !!s && s.insecure === true
+    rememberToggle.checked = !!s && s.remember !== false
     setView("edit")
     Qt.callLater(function() { (id ? nameField : urlField).forceActiveFocus() })
   }
@@ -324,7 +334,8 @@ Panel {
       secret: secretField.text,
       serviceFilter: serviceFilterField.text.trim(),
       hostFilter: hostFilterField.text.trim(),
-      insecure: insecureToggle.checked
+      insecure: insecureToggle.checked,
+      remember: rememberToggle.checked
     })
   }
 
@@ -410,6 +421,80 @@ Panel {
         root.configChanged()
         if (root.view === "edit") root.showServers()
       }
+    }
+  }
+
+  // ---- Unlocking a server that does not remember its secret
+  property string unlockId: ""
+  property string unlockReturn: "hosts"
+  property bool unlockBusy: false
+  property string unlockMessage: ""
+  readonly property bool unlockRemembers: !!unlockServer && unlockServer.remember !== false
+  readonly property var unlockServer: {
+    for (var i = 0; i < configured.length; i++) if (configured[i].id === unlockId) return configured[i]
+    for (var j = 0; j < polledServers.length; j++) if (polledServers[j].id === unlockId) return polledServers[j]
+    return null
+  }
+
+  function showUnlock(id) {
+    if (view !== "unlock") unlockReturn = settingsView ? "servers" : mainView
+    unlockId = id
+    unlockMessage = ""
+    unlockField.text = ""
+    setView("unlock")
+    listProc.running = true
+    Qt.callLater(function() { unlockField.forceActiveFocus() })
+  }
+
+  function runUnlock() {
+    if (unlockBusy || !hostWidget || unlockField.text === "") return
+    unlockBusy = true
+    unlockMessage = "Checking…"
+    unlockProc.input = JSON.stringify({ secret: unlockField.text })
+    unlockField.text = ""
+    unlockProc.command = [hostWidget.configTool, "unlock", unlockId]
+    unlockProc.running = true
+  }
+
+  function lockServer(id) {
+    if (!hostWidget) return
+    lockProc.command = [hostWidget.configTool, "lock", id]
+    lockProc.running = true
+  }
+
+  // The secret goes over stdin, never argv, and is not kept in QML afterwards
+  Process {
+    id: unlockProc
+    property string input: ""
+    stdinEnabled: true
+    onStarted: {
+      write(input + "\n")
+      input = ""
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var result = null
+        try { result = JSON.parse(text) } catch (e) {}
+        root.unlockBusy = false
+        if (result && result.ok) {
+          root.configChanged()
+          // Another locked server is next, otherwise back to where we came from
+          var next = root.lockedServers.filter(function(s) { return s.id !== root.unlockId })
+          if (next.length > 0 && root.unlockReturn !== "servers") root.showUnlock(next[0].id)
+          else root.setView(root.unlockReturn)
+        } else {
+          root.unlockMessage = result ? result.message : "The helper script failed"
+        }
+      }
+    }
+  }
+
+  Process {
+    id: lockProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.configChanged()
     }
   }
 
@@ -627,7 +712,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       // The form fields need the keys themselves
-      blocked: root.view === "edit"
+      blocked: root.view === "edit" || root.view === "unlock"
       onMoveRequested: function(dx, dy) {
         if (dy !== 0) root.moveCursor(dy)
         else root.moveSideways(dx)
@@ -640,6 +725,11 @@ Panel {
         if (t === "s") root.view === "servers" ? root.back() : root.showServers()
         else if (t === "n" && root.view === "servers") root.showEdit("")
         else if (t === "g") root.cycleGraph()
+        else if (t === "u") {
+          var sel = root.view === "servers" ? root.rows[root.cursor] : null
+          if (sel && sel.secretStore !== "file") sel.unlocked ? root.lockServer(sel.id) : root.showUnlock(sel.id)
+          else if (root.lockedServers.length > 0) root.showUnlock(root.lockedServers[0].id)
+        }
         else if (t === "1") root.setView("hosts")
         else if (t === "2") root.setView("problems")
         else if (t === "\b") root.back()
@@ -713,7 +803,7 @@ Panel {
 
           // ---- Servers that did not answer, their data is the last known
           Repeater {
-            model: root.settingsView ? [] : root.polledServers.filter(function(s) { return !s.ok })
+            model: root.settingsView ? [] : root.polledServers.filter(function(s) { return !s.ok && !s.locked })
             Text {
               width: column.width
               wrapMode: Text.Wrap
@@ -722,6 +812,35 @@ Panel {
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          // ---- Servers waiting for their secret
+          Repeater {
+            model: root.settingsView ? [] : root.lockedServers
+            Row {
+              spacing: Style.space(10)
+              Text {
+                id: lockedText
+                textFormat: Text.PlainText
+                text: "\u{f033e}  " + modelData.name + " is locked"
+                color: root.colorFor(1)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+              Text {
+                anchors.baseline: lockedText.baseline
+                text: "unlock"
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                MouseArea {
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(4)
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.showUnlock(modelData.id)
+                }
+              }
             }
           }
 
@@ -771,6 +890,8 @@ Panel {
                      + (root.multiServer && root.hostInfo ? " · " + root.hostInfo.serverName.toUpperCase() : "") }]
                 : root.view === "servers"
                 ? [{ id: "back", label: "‹ BACK" }, { id: "title", label: "SERVERS " + root.configured.length }]
+                : root.view === "unlock"
+                ? [{ id: "back", label: "‹ BACK" }, { id: "title", label: "PASSWORD FOR " + (root.unlockServer ? root.unlockServer.name.toUpperCase() : "") }]
                 : root.view === "edit"
                 ? (root.unconfigured ? [{ id: "title", label: "ADD A CHECKMK SERVER" }]
                    : [{ id: "back", label: "‹ SERVERS" },
@@ -822,13 +943,13 @@ Panel {
 
             Repeater {
               id: hostRepeater
-              model: root.view === "hosts" ? root.rows : []
+              model: root.hostRowsList
 
               Column {
                 id: hostEntry
                 required property var modelData
                 required property int index
-                readonly property bool firstOfServer: index === 0 || root.rows[index - 1].server !== modelData.server
+                readonly property bool firstOfServer: index === 0 || root.hostRowsList[index - 1].server !== modelData.server
                 readonly property var serverInfo: {
                   for (var i = 0; i < root.polledServers.length; i++)
                     if (root.polledServers[i].id === modelData.server) return root.polledServers[i]
@@ -857,8 +978,8 @@ Panel {
                     anchors.baseline: serverHeading.baseline
                     visible: !!hostEntry.serverInfo && !hostEntry.serverInfo.ok
                     textFormat: Text.PlainText
-                    text: "unreachable, last known state"
-                    color: root.urgent
+                    text: hostEntry.serverInfo && hostEntry.serverInfo.locked ? "locked, last known state" : "unreachable, last known state"
+                    color: hostEntry.serverInfo && hostEntry.serverInfo.locked ? root.colorFor(1) : root.urgent
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                   }
@@ -950,7 +1071,7 @@ Panel {
 
             Repeater {
               id: serviceRepeater
-              model: root.view === "problems" || root.view === "host" ? root.rows : []
+              model: root.serviceRowsList
 
               Rectangle {
                 id: row
@@ -1153,12 +1274,12 @@ Panel {
                   }
 
                   Text {
-                    visible: row.hasGraph && (root.graph.loading || root.graph.error !== "")
+                    visible: row.hasGraph && (!!root.graph.loading || !!root.graph.error)
                     width: parent.width
                     topPadding: Style.space(6)
                     wrapMode: Text.Wrap
                     textFormat: Text.PlainText
-                    text: root.graph.loading ? "Loading…" : root.graph.error
+                    text: root.graph.loading ? "Loading…" : (root.graph.error || "")
                     color: root.graph.loading ? root.dim : root.urgent
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -1208,7 +1329,7 @@ Panel {
 
             Repeater {
               id: serverRepeater
-              model: root.view === "servers" ? root.rows : []
+              model: root.serverRowsList
 
               Rectangle {
                 id: serverRow
@@ -1238,7 +1359,8 @@ Panel {
                   height: width
                   radius: width / 2
                   color: !serverRow.modelData.polled ? root.dim
-                    : serverRow.modelData.ok ? Model.OK_COLOR : root.urgent
+                    : serverRow.modelData.ok ? Model.OK_COLOR
+                    : serverRow.modelData.locked ? root.colorFor(1) : root.urgent
                 }
 
                 Column {
@@ -1271,7 +1393,7 @@ Panel {
                     font.pixelSize: Style.font.bodySmall
                   }
                   Text {
-                    visible: serverRow.modelData.polled && !serverRow.modelData.ok
+                    visible: serverRow.modelData.polled && !serverRow.modelData.ok && !serverRow.modelData.locked
                     width: parent.width
                     wrapMode: Text.Wrap
                     textFormat: Text.PlainText
@@ -1296,6 +1418,23 @@ Panel {
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
+                  }
+                  // Time left of the password, or locked
+                  Text {
+                    visible: serverRow.modelData.secretStore === "session" || serverRow.modelData.secretStore === "none"
+                      || serverRow.modelData.expires !== ""
+                    textFormat: Text.PlainText
+                    text: serverRow.modelData.unlocked ? serverRow.modelData.expires + " left · lock" : "locked · unlock"
+                    color: serverRow.modelData.unlocked ? root.dim : root.colorFor(1)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+
+                    MouseArea {
+                      anchors.fill: parent
+                      anchors.margins: -Style.space(4)
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: serverRow.modelData.unlocked ? root.lockServer(serverRow.modelData.id) : root.showUnlock(serverRow.modelData.id)
+                    }
                   }
                   Text {
                     visible: serverRow.selected || serverRow.confirming
@@ -1372,8 +1511,9 @@ Panel {
               width: parent.width
               password: true
               placeholderText: !root.editServer ? ""
-                : root.editServer.secretStore === "keyring" ? "stored in the keyring, leave empty to keep"
-                : root.editServer.secretStore === "file" ? "stored in a file, leave empty to keep"
+                : root.editServer.secretStore === "keyring" ? "remembered, leave empty to keep"
+                : root.editServer.secretStore === "file" ? "saved in a file, leave empty to keep"
+                : root.editServer.unlocked ? "unlocked, leave empty to keep"
                 : ""
               foreground: root.fg
               font.family: root.fontFamily
@@ -1404,6 +1544,29 @@ Panel {
               KeyNavigation.tab: nameField
               Keys.onEscapePressed: root.back()
               onAccepted: root.runSetup("test")
+            }
+
+            Toggle {
+              id: rememberToggle
+              width: parent.width
+              checked: false
+              label: "Remember password"
+              description: checked ? "Saved in the desktop keyring for 30 days, then asked again"
+                : "Asked after each login and kept in memory for 8 hours, never saved"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onClicked: checked = !checked
+            }
+
+            Text {
+              visible: rememberToggle.checked
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: "Anything running in your session can read a saved password. Only remember the password of a read-only account."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
             }
 
             Toggle {
@@ -1486,7 +1649,79 @@ Panel {
               wrapMode: Text.Wrap
               textFormat: Text.PlainText
               text: "Tip: in Checkmk create a user under Setup › Users with the role Guest user and the "
-                + "authentication option Automation secret. The secret is kept in your desktop keyring."
+                + "authentication option Automation secret."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          // ---- Unlock a server
+          Column {
+            visible: root.view === "unlock"
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              width: parent.width
+              elide: Text.ElideMiddle
+              textFormat: Text.PlainText
+              text: root.unlockServer ? root.unlockServer.user + " @ " + root.unlockServer.url : ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            FieldLabel {
+              label: "Password or automation secret"
+              hint: root.unlockRemembers ? "remembered for 30 days" : "kept in memory only"
+            }
+            TextField {
+              id: unlockField
+              width: parent.width
+              password: true
+              enabled: !root.unlockBusy
+              foreground: root.fg
+              font.family: root.fontFamily
+              Keys.onEscapePressed: root.back()
+              onAccepted: root.runUnlock()
+            }
+
+            Row {
+              spacing: Style.space(8)
+              Button {
+                text: "Unlock"
+                bordered: true
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onClicked: root.runUnlock()
+              }
+              Button {
+                text: "Cancel"
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onClicked: root.back()
+              }
+            }
+
+            Text {
+              visible: root.unlockMessage !== ""
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: root.unlockMessage
+              color: root.unlockBusy ? root.dim : root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: root.unlockRemembers
+                ? "The remembered password of this server expired or was locked. Entering it again remembers it for another 30 days."
+                : "This server does not remember its password. It stays unlocked for 8 hours or until you lock it in the server list, and is never saved."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1499,8 +1734,9 @@ Panel {
             width: parent.width
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
-            text: root.view === "edit" ? "tab next field · enter test · esc back"
-              : root.view === "servers" ? "enter edit · n add · x remove · h back"
+            text: root.view === "unlock" ? "enter unlock · esc back"
+              : root.view === "edit" ? "tab next field · enter test · esc back"
+              : root.view === "servers" ? "enter edit · n add · x remove · u lock/unlock · h back"
               : root.view === "hosts" ? "enter/l open host · 2 problems · o host in Checkmk · r refresh · s servers"
               : root.view === "host" ? "enter details, again opens Checkmk · h/backspace back · o open in Checkmk"
               : "enter details, again opens Checkmk · a " + (root.showAll ? "problems only" : "all services")

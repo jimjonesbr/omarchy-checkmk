@@ -6,17 +6,33 @@
 #   checkmk-config test           test a server read as JSON from stdin
 #   checkmk-config save           add or update a server read as JSON from stdin
 #   checkmk-config delete <id>    remove a server and its stored secret
+#   checkmk-config unlock <id>    check a secret read as JSON from stdin, {"secret": "..."},
+#                                 and keep it again, for a locked server
+#   checkmk-config lock [<id>]    forget the secret of one or all servers
 #   checkmk-config secret <id>    print the secret of a server, for checkmk-poll
 #
 # test and save read one line of JSON from stdin:
 #   {"id": "", "name": "Production", "url": "...", "user": "...", "secret": "...",
-#    "serviceFilter": "", "hostFilter": "", "insecure": false}
-# An empty id adds a server, an empty secret keeps the stored one.
+#    "serviceFilter": "", "hostFilter": "", "insecure": false, "remember": false}
+# An empty id adds a server, an empty secret keeps the stored one. Without
+# "remember", a new server does not remember its secret and an existing one keeps
+# its choice.
 #
-# The servers are kept in ~/.config/omarchy-checkmk/servers.json.
-# Secrets live in the desktop keyring (Secret Service, e.g. gnome-keyring), and only
-# when that is not available in secrets/<id>, readable by the user alone. A server
-# may also name a "secretFile" of its own, e.g. for the test instance.
+# The servers are kept in ~/.config/omarchy-checkmk/servers.json. A secret is kept
+# in one of two ways:
+#
+# - Not remembered ("remember": false, the default for new servers): never written
+#   anywhere. After each login the server is locked; the secret entered then lives
+#   in the kernel keyring of the user (memory only) for "sessionHours" (default 8).
+# - Remembered ("remember": true, or no "remember" in servers.json from before it
+#   existed): in the desktop keyring (Secret Service, e.g. gnome-keyring), or where
+#   there is none in secrets/<id>, readable by the user alone. Note that a keyring
+#   without a password of its own, as with autologin, is a plain file on disk.
+#   The secret is deleted after "rememberDays" (default 30, "rememberedUntil" holds
+#   the date) and the server is locked until it is entered again.
+#
+# A server may also name a "secretFile" of its own, e.g. for the test instance;
+# that file is never expired or deleted.
 
 set -uo pipefail
 # servers.json and secret files are for this user only
@@ -25,6 +41,8 @@ umask 077
 DIR="${CHECKMK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-checkmk}"
 SERVERS="$DIR/servers.json"
 SECRETS="$DIR/secrets"
+SESSION_HOURS=8
+REMEMBER_DAYS=30
 # Single server configuration of earlier versions, migrated on first use
 LEGACY="$DIR/config"
 
@@ -82,14 +100,54 @@ keyring_store() { # url user secret
 # Keyring entries are keyed by url and user, so two servers entries may share one
 keyring_clear_unused() { # url user
   local users
-  users="$(servers | jq --arg u "$1" --arg n "$2" '[.[] | select(.url == $u and .user == $n)] | length')"
+  users="$(servers | jq --arg u "$1" --arg n "$2" '[.[] | select(.url == $u and .user == $n and .remember != false)] | length')"
   ((users == 0)) && keyring_available && secret-tool clear application omarchy-checkmk url "$1" user "$2" 2>/dev/null
   return 0
+}
+
+# ---- Secrets kept in memory, in the kernel keyring of the user
+
+session_key() { # id -> kernel key serial
+  keyctl search @u user "omarchy-checkmk:$1" 2>/dev/null
+}
+
+session_lookup() { # id
+  local key
+  key="$(session_key "$1")" && keyctl pipe "$key" 2>/dev/null
+}
+
+session_store() { # id secret hours
+  command -v keyctl >/dev/null || return 1
+  local key
+  # padd reads the secret from stdin and replaces an existing key of the same name
+  key="$(printf '%s' "$2" | keyctl padd user "omarchy-checkmk:$1" @u 2>/dev/null)" || return 1
+  # Readable by this user's processes, like the desktop keyring
+  keyctl setperm "$key" 0x3f3f0000 >/dev/null 2>&1
+  keyctl timeout "$key" $(($3 * 3600)) >/dev/null
+}
+
+session_clear() { # id
+  local key
+  key="$(session_key "$1")" || return 0
+  keyctl revoke "$key" >/dev/null 2>&1
+  keyctl unlink "$key" @u >/dev/null 2>&1
+  return 0
+}
+
+# Time left of an unlocked secret as the kernel reports it, e.g. "7h59m"
+session_expires() { # id
+  local key
+  key="$(session_key "$1")" || return 0
+  awk -v id="$(printf '%08x' "$key")" '$1 == id { print $4 }' /proc/keys 2>/dev/null
 }
 
 secret_of() { # server json
   local id url user file
   id="$(jq -r .id <<<"$1")"
+  if [[ "$(jq -r '.remember' <<<"$1")" == false ]]; then
+    session_lookup "$id"
+    return
+  fi
   url="$(jq -r .url <<<"$1")"
   user="$(jq -r .user <<<"$1")"
   file="$(jq -r '.secretFile // ""' <<<"$1")"
@@ -106,7 +164,8 @@ secret_of() { # server json
 secret_store_of() { # server json
   local id
   id="$(jq -r .id <<<"$1")"
-  if [[ -n "$(jq -r '.secretFile // ""' <<<"$1")" ]]; then echo file
+  if [[ "$(jq -r '.remember' <<<"$1")" == false ]]; then echo session
+  elif [[ -n "$(jq -r '.secretFile // ""' <<<"$1")" ]]; then echo file
   elif [[ -r "$SECRETS/$id" ]]; then echo file
   elif keyring_lookup "$(jq -r .url <<<"$1")" "$(jq -r .user <<<"$1")" >/dev/null; then echo keyring
   else echo none
@@ -123,6 +182,42 @@ store_secret() { # id url user secret -> prints the store used
     (umask 077; printf '%s\n' "$4" > "$SECRETS/$1")
     echo file
   fi
+}
+
+remember_days() { # server json
+  jq -r --argjson d "$REMEMBER_DAYS" '.rememberDays // $d' <<<"$1"
+}
+
+set_remembered_until() { # id epoch, 0 removes it
+  servers | jq --arg id "$1" --argjson until "$2" '
+    map(if .id == $id then (if $until > 0 then .rememberedUntil = $until else del(.rememberedUntil) end) else . end)
+  ' | write_servers
+}
+
+forget_secret() { # server json
+  local id
+  id="$(jq -r .id <<<"$1")"
+  rm -f "$SECRETS/$id"
+  session_clear "$id"
+  keyring_available && secret-tool clear application omarchy-checkmk url "$(jq -r .url <<<"$1")" user "$(jq -r .user <<<"$1")" 2>/dev/null
+  set_remembered_until "$id" 0
+}
+
+# Remembered secrets past their date are deleted. Secrets remembered before there
+# was an expiry get their 30 days from now on.
+expire_secrets() {
+  local now s id until
+  now="$(date +%s)"
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    id="$(jq -r .id <<<"$s")"
+    until="$(jq -r '.rememberedUntil // 0' <<<"$s")"
+    if ((until == 0)); then
+      [[ "$(secret_store_of "$s")" != none ]] && set_remembered_until "$id" $((now + $(remember_days "$s") * 86400))
+    elif ((until <= now)); then
+      forget_secret "$s"
+    fi
+  done < <(servers | jq -c '.[] | select(.remember != false and (.secretFile // "") == "")')
 }
 
 migrate_legacy() {
@@ -156,7 +251,17 @@ list() {
   local out="[]" s
   while IFS= read -r s; do
     [[ -n "$s" ]] || continue
-    out="$(jq -c --argjson s "$s" --arg store "$(secret_store_of "$s")" '. + [$s + {secretStore: $store}]' <<<"$out")"
+    local id expires=""
+    id="$(jq -r .id <<<"$s")"
+    [[ "$(jq -r '.remember' <<<"$s")" == false ]] && expires="$(session_expires "$id")"
+    out="$(jq -c --argjson s "$s" --arg store "$(secret_store_of "$s")" --arg expires "$expires" --argjson now "$(date +%s)" '
+      . + [$s + {secretStore: $store}
+            + if $store == "session" then {unlocked: ($expires != ""), expires: $expires}
+              elif ($s.rememberedUntil // 0) > 0 and ($s.secretFile // "") == "" then
+                {unlocked: true, expires: ((($s.rememberedUntil - $now) / 86400 | ceil | tostring) + "d")}
+              elif $store == "none" then {unlocked: false, expires: ""}
+              else {} end]
+    ' <<<"$out")"
   done < <(servers | jq -c '.[]')
   echo "$out"
 }
@@ -181,6 +286,10 @@ read_input() {
 
   EXISTING=""
   [[ -n "$IN_ID" ]] && EXISTING="$(server "$IN_ID")"
+  IN_REMEMBER="$(jq -r --argjson e "${EXISTING:-null}" '
+    if .remember != null then .remember == true
+    elif $e != null then $e.remember != false
+    else false end' <<<"$line")"
   # An empty secret keeps the stored one, as long as url and user are unchanged
   if [[ -z "$IN_SECRET" && -n "$EXISTING" ]]; then
     IN_SECRET="$(secret_of "$(jq -c --arg u "$IN_URL" --arg n "$IN_USER" '. + {url: $u, user: $n}' <<<"$EXISTING")")"
@@ -210,6 +319,11 @@ warnings() {
 
 test_connection() {
   read_input
+  check_connection
+}
+
+# Tests IN_URL, IN_USER, IN_SECRET and IN_INSECURE and prints the result
+check_connection() {
   [[ -n "$IN_URL" ]] || { result false "The URL is missing"; return 1; }
   [[ -n "$IN_USER" ]] || { result false "The user name is missing"; return 1; }
   [[ -n "$IN_SECRET" ]] || { result false "The password or secret is missing"; return 1; }
@@ -257,30 +371,54 @@ save() {
     old_user="$(jq -r .user <<<"$EXISTING")"
   fi
 
-  # A secret file of the server's own stays in charge, unless a new secret was typed in
-  local secret_file=""
+  local secret_file="" hours="$SESSION_HOURS"
   [[ -n "$EXISTING" ]] && secret_file="$(jq -r '.secretFile // ""' <<<"$EXISTING")"
-  if [[ -n "$secret_file" && "$IN_SECRET" == "$(secret_of "$EXISTING")" ]]; then
+  [[ -n "$EXISTING" ]] && hours="$(jq -r --argjson d "$SESSION_HOURS" '.sessionHours // $d' <<<"$EXISTING")"
+  if [[ "$IN_REMEMBER" == false ]]; then
+    # Nothing on disk: the secret only unlocks the server for this session
+    secret_file=""
+    session_store "$id" "$IN_SECRET" "$hours" ||
+      { result false "Could not keep the secret in memory: keyctl (package keyutils) is missing"; return 1; }
+    rm -f "$SECRETS/$id"
+    store=session
+  elif [[ -n "$secret_file" && "$IN_SECRET" == "$(secret_of "$EXISTING")" ]]; then
+    # A secret file of the server's own stays in charge, unless a new secret was typed in
     store=file
   else
     secret_file=""
     store="$(store_secret "$id" "$IN_URL" "$IN_USER" "$IN_SECRET")"
+    session_clear "$id"
   fi
+  local days=$REMEMBER_DAYS until=0
+  [[ -n "$EXISTING" ]] && days="$(remember_days "$EXISTING")"
+  [[ "$IN_REMEMBER" == true && -z "$secret_file" ]] && until=$(($(date +%s) + days * 86400))
 
   servers | jq --arg id "$id" --arg name "$name" --arg url "$IN_URL" --arg user "$IN_USER" \
     --arg sf "$IN_SERVICE_FILTER" --arg hf "$IN_HOST_FILTER" --argjson insecure "$IN_INSECURE" \
-    --arg file "$secret_file" '
+    --arg file "$secret_file" --argjson remember "$IN_REMEMBER" --argjson until "$until" '
     ({id: $id, name: $name, url: $url, user: $user, serviceFilter: $sf, hostFilter: $hf, insecure: $insecure}
-      + (if $file != "" then {secretFile: $file} else {} end)) as $new
+      + (if $file != "" then {secretFile: $file} else {} end)
+      + {remember: $remember}
+      + (if $until > 0 then {rememberedUntil: $until} else {} end)) as $new
     | if any(.[]; .id == $id)
-      then map(if .id == $id then (with_entries(select(.key == "timeout")) + $new) else . end)
+      then map(if .id == $id
+        then (with_entries(select(.key | IN("timeout", "site", "sessionHours", "rememberDays"))) + $new)
+        else . end)
       else . + [$new] end
   ' | write_servers
 
-  [[ -n "$old_url" && ( "$old_url" != "$IN_URL" || "$old_user" != "$IN_USER" ) ]] &&
-    keyring_clear_unused "$old_url" "$old_user"
+  # A secret no longer needed in the desktop keyring is removed from it
+  [[ -n "$old_url" ]] && keyring_clear_unused "$old_url" "$old_user"
+  [[ "$IN_REMEMBER" == false ]] && keyring_clear_unused "$IN_URL" "$IN_USER"
 
-  result true "Saved $name, secret stored in the $( [[ $store == keyring ]] && echo keyring || echo "file" )" \
+  local where
+  case "$store" in
+    keyring) where="password remembered for $days days" ;;
+    session) where="password kept in memory for $hours hours, never saved" ;;
+    *) where="password saved for $days days" ;;
+  esac
+  [[ -n "$secret_file" ]] && where="password read from $secret_file"
+  result true "Saved $name, $where" \
     "$(jq -nc --arg id "$id" --arg s "$store" --argjson w "$(warnings)" '{id: $id, secretStore: $s, warnings: $w}')"
 }
 
@@ -290,17 +428,61 @@ delete() { # id
   [[ -n "$existing" ]] || { result false "Unknown server $1"; return 1; }
   servers | jq --arg id "$1" 'map(select(.id != $id))' | write_servers
   rm -f "$SECRETS/$1"
+  session_clear "$1"
   keyring_clear_unused "$(jq -r .url <<<"$existing")" "$(jq -r .user <<<"$existing")"
   result true "Removed $(jq -r .name <<<"$existing")"
 }
 
+unlock() { # id, secret as JSON on stdin
+  local existing line hours
+  existing="$(server "$1")"
+  [[ -n "$existing" ]] || { result false "Unknown server $1"; return 1; }
+  IFS= read -r line || true
+  IN_SECRET="$(jq -r '.secret // ""' <<<"$line" 2>/dev/null)"
+  IN_URL="$(jq -r .url <<<"$existing")"
+  IN_USER="$(jq -r .user <<<"$existing")"
+  IN_INSECURE="$(jq -r '.insecure // false' <<<"$existing")"
+  hours="$(jq -r --argjson d "$SESSION_HOURS" '.sessionHours // $d' <<<"$existing")"
+
+  # Only a secret Checkmk accepts unlocks the server
+  local checked
+  checked="$(check_connection)" || { echo "$checked"; return 1; }
+  if [[ "$(jq -r '.remember' <<<"$existing")" == false ]]; then
+    session_store "$1" "$IN_SECRET" "$hours" ||
+      { result false "Could not keep the password in memory: keyctl (package keyutils) is missing"; return 1; }
+    result true "Unlocked for $hours hours" "$(jq -c '{warnings}' <<<"$checked")"
+  else
+    local days
+    days="$(remember_days "$existing")"
+    store_secret "$1" "$IN_URL" "$IN_USER" "$IN_SECRET" >/dev/null
+    set_remembered_until "$1" $(($(date +%s) + days * 86400))
+    result true "Remembered for $days days" "$(jq -c '{warnings}' <<<"$checked")"
+  fi
+}
+
+lock() { # [id]
+  local s
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    if [[ "$(jq -r '.remember' <<<"$s")" == false ]]; then
+      session_clear "$(jq -r .id <<<"$s")"
+    elif [[ -z "$(jq -r '.secretFile // ""' <<<"$s")" ]]; then
+      forget_secret "$s"
+    fi
+  done < <(servers | jq -c --arg id "${1:-}" '.[] | select($id == "" or .id == $id)')
+  result true "Locked"
+}
+
 migrate_legacy
+expire_secrets
 
 case "${1:-}" in
   list) list ;;
   test) test_connection ;;
   save) save ;;
   delete) delete "${2:?server id}" ;;
+  unlock) unlock "${2:?server id}" ;;
+  lock) lock "${2:-}" ;;
   secret) s="$(server "${2:?server id}")"; [[ -n "$s" ]] && secret_of "$s" ;;
-  *) sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

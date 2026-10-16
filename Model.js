@@ -63,9 +63,12 @@ function summary(status) {
   if (c.unknown) parts.push(c.unknown + " UNKNOWN")
   if (c.warn) parts.push(c.warn + " WARN")
   var text = parts.length ? parts.join(", ") : "All " + (c.ok || 0) + " services OK"
-  var down = status.servers.filter(function(s) { return !s.ok }).map(function(s) { return s.name })
+  var down = status.servers.filter(function(s) { return !s.ok && !s.locked }).map(function(s) { return s.name })
+  var locked = status.servers.filter(function(s) { return s.locked }).map(function(s) { return s.name })
+  if (!status.reachable && locked.length === status.servers.length) return "Checkmk locked: click to unlock"
   if (!status.reachable) text = "Checkmk unreachable: " + status.error + "\nLast known: " + text
   else if (down.length) text += "\nUnreachable: " + down.join(", ")
+  if (locked.length && status.reachable) text += "\nLocked: " + locked.join(", ")
   return text
 }
 
@@ -87,8 +90,11 @@ function serverRows(configured, polled) {
     for (var i = 0; i < polled.length; i++) if (polled[i].id === c.id) live = polled[i]
     return {
       id: c.id, name: c.name, url: c.url, user: c.user,
+      secretStore: c.secretStore, unlocked: c.unlocked === true, expires: c.expires || "",
+      remember: c.remember !== false,
       polled: !!live,
       ok: live ? live.ok : false,
+      locked: live ? live.locked === true : false,
       error: live ? live.error : "",
       hosts: live ? live.hosts : 0,
       counts: live ? live.counts : null

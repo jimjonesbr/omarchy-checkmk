@@ -7,8 +7,8 @@ A bar widget for the Omarchy shell that keeps an eye on one or more Checkmk serv
 - A popup lists hosts and problems, with service details, metrics and history graphs.
 - A desktop notification is sent whenever a service changes state.
 
-Requires Checkmk 2.2 or newer, plus `curl` and `jq`. Secrets are stored in the
-desktop keyring when `secret-tool` is available.
+Requires Checkmk 2.2 or newer, plus `curl` and `jq`, and `keyutils` or
+`secret-tool` to keep the secret.
 
 ## Install
 
@@ -54,9 +54,15 @@ The widget settings in `~/.config/omarchy/shell.json` are `refreshIntervalSec`
 (default 60), `notifications` and `icon` (any Nerd Font glyph).
 
 The servers are kept in `~/.config/omarchy-checkmk/servers.json` (see
-`servers.example.json`) and their secrets in the keyring. If no keyring is
-available, they go to files readable only by you. If the Checkmk site id is not
-the last part of the URL, add `"site": "<id>"` to that server.
+`servers.example.json`). If the Checkmk site id is not the last part of the URL,
+add `"site": "<id>"` to that server.
+
+By default the password is never saved: the widget asks for it after each login
+and keeps it in kernel memory only, for 8 hours (`sessionHours`). With *Remember
+password* it goes to the desktop keyring for 30 days (`rememberDays`). Anything
+running in your session can read it there, and with autologin the keyring is a
+plain file, so only remember the password of a read-only account. Either way,
+`lock` in the server list forgets it right away.
 
 ## Development
 

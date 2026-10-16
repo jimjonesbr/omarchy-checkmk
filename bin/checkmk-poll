@@ -56,12 +56,23 @@ fetch() { # server json
   timeout="$(jq -r '.timeout // 10' <<<"$server")"
   local out="$WORK/$id.json"
 
-  failed() {
-    jq -nc --arg error "$1" '{ok: false, error: $error, services: []}' > "$out"
+  failed() { # error [locked]
+    jq -nc --arg error "$1" --argjson locked "${2:-false}" '{ok: false, locked: $locked, error: $error, services: []}' > "$out"
   }
 
   secret="$("$BIN/checkmk-config" secret "$id")"
-  [[ -n "$secret" ]] || { failed "No password or secret stored for $user"; return; }
+  if [[ -z "$secret" ]]; then
+    # No password at hand: not remembered, expired after its days, or locked by hand.
+    # The server waits until the password is entered again.
+    if [[ -n "$(jq -r '.secretFile // ""' <<<"$server")" ]]; then
+      failed "Cannot read the password file $(jq -r .secretFile <<<"$server")"
+    elif [[ "$(jq -r '.remember' <<<"$server")" == false ]]; then
+      failed "Locked, enter the password to connect" true
+    else
+      failed "The remembered password expired, enter it again" true
+    fi
+    return
+  fi
 
   # Livestatus filter for the services table, empty filters match everything
   query="$(jq -c '
@@ -172,7 +183,7 @@ jq -n --argjson servers "$servers" --argjson results "$results" --argjson previo
   def start($url; $view): $url + "/check_mk/index.py?start_url=" + ($view | @uri);
 
   [ $servers[] | . as $s | $results[$s.id] as $r
-    | {id, name, url, ok: $r.ok, error: $r.error,
+    | {id, name, url, ok: $r.ok, locked: ($r.locked // false), error: $r.error,
        services: (if $r.ok then $r.services
                   else [ ($previous.services // [])[] | select(.server == $s.id) | . + {stale: true} ] end)}
   ] as $polled
@@ -184,11 +195,12 @@ jq -n --argjson servers "$servers" --argjson results "$results" --argjson previo
       reachable: ($failed | length < ($polled | length)),
       unconfigured: false,
       error: ($failed | map(.name + ": " + .error) | join("\n")),
+      locked: ($polled | map(select(.locked)) | length > 0),
       checked: now | floor,
       # Opened by a right click on the icon
       url: $servers[0].url,
       servers: [ $polled[] | . as $p | {
-          id, name, url, ok, error,
+          id, name, url, ok, locked, error,
           hosts: ($services | map(select(.server == $p.id) | .host) | unique | length),
           counts: ($services | map(select(.server == $p.id and (.isHost | not)))
             | {ok: count(0), warn: count(1), crit: count(2), unknown: count(3)})
@@ -225,7 +237,7 @@ jq -n --argjson servers "$servers" --argjson results "$results" --argjson previo
 SEP=$'\x1f'
 
 # ---- Servers that became unreachable or reachable again. A server polled for the
-# first time announces nothing.
+# first time announces nothing, and neither does locking or unlocking one.
 while IFS="$SEP" read -r kind name detail url; do
   if [[ "$kind" == down ]]; then
     send_notification normal "Checkmk $name unreachable" "$detail"
@@ -233,8 +245,9 @@ while IFS="$SEP" read -r kind name detail url; do
     send_notification low "Checkmk $name reachable again" "$url"
   fi
 done < <(jq -r --argjson prev "$previous" '
-  ($prev.servers // [] | map({key: .id, value: .ok}) | from_entries) as $before
-  | .servers[] | . as $s | select(($before | has($s.id)) and $before[$s.id] != $s.ok)
+  ($prev.servers // [] | map({key: .id, value: (if .locked then "locked" else .ok end)}) | from_entries) as $before
+  | .servers[] | . as $s
+  | select(($s.locked | not) and ($before | has($s.id)) and $before[$s.id] != "locked" and $before[$s.id] != $s.ok)
   | [(if $s.ok then "up" else "down" end), $s.name, $s.error, $s.url] | join("\u001f")
 ' "$STATUS")
 
