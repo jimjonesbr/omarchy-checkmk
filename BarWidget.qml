@@ -27,8 +27,7 @@ BarWidget {
   readonly property bool reachable: !!status && status.reachable === true
   readonly property bool unconfigured: !!status && status.unconfigured === true
   readonly property int worst: status && !status.unconfigured ? (status.worst || 0) : 0
-  readonly property color stateColor: Model.stateColor(worst, bar ? bar.barForeground : Color.foreground,
-    bar ? bar.urgent : Color.urgent)
+  readonly property color stateColor: Model.stateColor(worst, bar ? bar.barForeground : Color.foreground)
 
   // There is one bar per monitor, but only the first instance polls, so every
   // state change is notified once

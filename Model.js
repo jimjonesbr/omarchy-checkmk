@@ -11,15 +11,20 @@ function stateName(state) {
   return NAMES[state] || "?"
 }
 
+// The state colours are fixed, not taken from the theme: some themes (e.g.
+// Hackerman) make their "red" green, and CRIT must look like CRIT everywhere.
+var CRIT_COLOR = "#e06c75"
+var WARN_COLOR = "#e5c07b"
+var UNKNOWN_COLOR = "#d19a66"
+var OK_COLOR = "#98c379"
+
 // okColor defaults to the foreground, so OK stays unobtrusive in the bar
-function stateColor(state, foreground, urgent, okColor) {
-  if (state === 2) return urgent
-  if (state === 1) return "#e5c07b"
-  if (state === 3) return "#d19a66"
+function stateColor(state, foreground, okColor) {
+  if (state === 2) return CRIT_COLOR
+  if (state === 1) return WARN_COLOR
+  if (state === 3) return UNKNOWN_COLOR
   return okColor || foreground
 }
-
-var OK_COLOR = "#98c379"
 
 function parseStatus(text) {
   try {

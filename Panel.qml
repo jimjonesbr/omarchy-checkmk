@@ -44,12 +44,13 @@ Panel {
   readonly property int now: hostWidget ? hostWidget.now : 0
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(fg, 1.4)
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  // Errors share the CRIT colour, which does not follow the theme (see Model.js)
+  readonly property color urgent: Model.CRIT_COLOR
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  function colorFor(state) { return Model.stateColor(state, fg, urgent) }
+  function colorFor(state) { return Model.stateColor(state, fg) }
   // In the host and server lists OK is green, like in Checkmk
-  function hostColorFor(state) { return Model.stateColor(state, fg, urgent, Model.OK_COLOR) }
+  function hostColorFor(state) { return Model.stateColor(state, fg, Model.OK_COLOR) }
 
   function open() {
     cursor = 0
