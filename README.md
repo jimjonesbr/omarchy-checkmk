@@ -46,6 +46,7 @@ Left click opens the panel, middle click polls now, right click opens Checkmk.
 | `a`               | problems only / all services                     |
 | `o`               | open in Checkmk                                  |
 | `s`               | servers                                          |
+| `i`               | about: version, author, license                  |
 | `r`               | poll now                                         |
 
 Acknowledged problems and problems in downtime are shown dimmed and neither
@@ -54,7 +55,7 @@ colour the icon nor notify.
 From a terminal or a Hyprland keybinding:
 
 ```bash
-omarchy-shell checkmk show hosts    # or problems, servers, host:NAME
+omarchy-shell checkmk show hosts    # or problems, servers, about, host:NAME
 omarchy-shell checkmk refresh
 ```
 
@@ -88,3 +89,22 @@ The read-only API user is `omarchy`, with its secret in `deploy-checkmk/omarchy.
 `CMK_LAB=staging CMK_WEB_PORT=8081` runs a second instance from `fixtures-staging/`.
 
 After changing the code, run `omarchy-restart-shell`.
+
+### Releasing a new version
+
+The version lives only in `manifest.json`; the panel's about page reads it from
+there. Use `MAJOR.MINOR.PATCH`: raise PATCH for fixes, MINOR for new features,
+MAJOR for changes that break existing setups (e.g. `servers.json`).
+
+```bash
+jq '.version = "0.4.0"' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
+omarchy plugin validate .
+git commit -am "Release 0.4.0"
+git tag -a v0.4.0 -m "0.4.0"
+git push && git push --tags
+```
+
+Installed plugins pick it up with `omarchy plugin update`. A marketplace listing
+stays on its approved commit until the update is submitted through the
+[plugin verification form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml)
+with the full commit hash (`git rev-parse HEAD`).

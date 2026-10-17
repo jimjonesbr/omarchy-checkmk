@@ -15,7 +15,7 @@ Panel {
   // The BarWidget that owns the data. The bar identifies popouts by that widget.
   property var hostWidget: null
 
-  // "hosts", "problems", "host" (the services of currentHost), "servers", "edit" or "unlock"
+  // "hosts", "problems", "host" (the services of currentHost), "servers", "edit", "unlock" or "about"
   property string view: "hosts"
   property string mainView: "hosts"
   property string currentServer: ""
@@ -32,7 +32,9 @@ Panel {
   readonly property bool multiServer: polledServers.length > 1
   readonly property var hostInfo: Model.findHost(hosts, currentServer, currentHost)
   readonly property bool unconfigured: !!status && status.unconfigured === true
-  readonly property bool settingsView: view === "servers" || view === "edit" || view === "unlock"
+  readonly property bool settingsView: view === "servers" || view === "edit" || view === "unlock" || view === "about"
+  // The view the about page goes back to
+  property string aboutReturn: "hosts"
   readonly property var lockedServers: polledServers.filter(function(s) { return s.locked })
   // Each list has its own rows, so a list never sees another one's rows while the view changes
   readonly property var serverRowsList: view === "servers" ? Model.serverRows(configured, polledServers) : []
@@ -90,6 +92,8 @@ Panel {
       setView(name)
     } else if (name === "servers") {
       showServers()
+    } else if (name === "about") {
+      showAbout()
     } else if (name === "unlock" && lockedServers.length > 0) {
       showUnlock(lockedServers[0].id)
     }
@@ -133,6 +137,8 @@ Panel {
       setView(mainView)
     } else if (view === "unlock") {
       setView(unlockReturn)
+    } else if (view === "about") {
+      setView(aboutReturn)
     } else if (view === "edit") {
       if (unconfigured) return
       var id = editId
@@ -300,6 +306,12 @@ Panel {
     return null
   }
 
+  function showAbout() {
+    if (view === "about") return
+    aboutReturn = view === "edit" || view === "unlock" ? "servers" : view
+    setView("about")
+  }
+
   function showServers() {
     setView("servers")
     listProc.running = true
@@ -366,6 +378,29 @@ Panel {
   function configChanged() {
     listProc.running = true
     if (hostWidget) hostWidget.refresh()
+  }
+
+  // ---- About: name, version and credits come from manifest.json, plus the
+  // commit when the plugin was installed from git
+  readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, "")
+  property var about: ({})
+  property string commit: ""
+
+  FileView {
+    path: root.pluginDir + "/manifest.json"
+    printErrors: false
+    onLoaded: {
+      try { root.about = JSON.parse(text()) } catch (e) { root.about = {} }
+    }
+  }
+
+  Process {
+    running: true
+    command: ["git", "-C", root.pluginDir, "rev-parse", "--short", "HEAD"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.commit = text.trim()
+    }
   }
 
   Process {
@@ -724,6 +759,7 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "s") root.view === "servers" ? root.back() : root.showServers()
+        else if (t === "i") root.view === "about" ? root.back() : root.showAbout()
         else if (t === "n" && root.view === "servers") root.showEdit("")
         else if (t === "g") root.cycleGraph()
         else if (t === "u") {
@@ -775,7 +811,7 @@ Panel {
               anchors.right: parent.right
               anchors.verticalCenter: title.verticalCenter
               text: "\u{f0493}"
-              color: root.settingsView ? Color.accent : (gearMouse.containsMouse ? root.fg : root.dim)
+              color: root.settingsView && root.view !== "about" ? Color.accent : (gearMouse.containsMouse ? root.fg : root.dim)
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
 
@@ -785,13 +821,33 @@ Panel {
                 anchors.margins: -Style.space(4)
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.settingsView ? root.setView(root.mainView) : root.showServers()
+                onClicked: root.settingsView && root.view !== "about" ? root.setView(root.mainView) : root.showServers()
+              }
+            }
+
+            Text {
+              id: info
+              anchors.right: gear.left
+              anchors.rightMargin: Style.space(12)
+              anchors.verticalCenter: title.verticalCenter
+              text: "\u{f02fd}"
+              color: root.view === "about" ? Color.accent : (infoMouse.containsMouse ? root.fg : root.dim)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+
+              MouseArea {
+                id: infoMouse
+                anchors.fill: parent
+                anchors.margins: -Style.space(4)
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.view === "about" ? root.back() : root.showAbout()
               }
             }
 
             Text {
               visible: !root.unconfigured
-              anchors.right: gear.left
+              anchors.right: info.left
               anchors.rightMargin: Style.space(12)
               anchors.verticalCenter: title.verticalCenter
               textFormat: Text.PlainText
@@ -891,6 +947,8 @@ Panel {
                      + (root.multiServer && root.hostInfo ? " · " + root.hostInfo.serverName.toUpperCase() : "") }]
                 : root.view === "servers"
                 ? [{ id: "back", label: "‹ BACK" }, { id: "title", label: "SERVERS " + root.configured.length }]
+                : root.view === "about"
+                ? [{ id: "back", label: "‹ BACK" }, { id: "title", label: "ABOUT" }]
                 : root.view === "unlock"
                 ? [{ id: "back", label: "‹ BACK" }, { id: "title", label: "PASSWORD FOR " + (root.unlockServer ? root.unlockServer.name.toUpperCase() : "") }]
                 : root.view === "edit"
@@ -1464,6 +1522,84 @@ Panel {
             }
           }
 
+          // ---- About: name, version and credits
+          Column {
+            visible: root.view === "about"
+            width: parent.width
+            spacing: Style.space(4)
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: (root.about.name || "Checkmk") + " " + (root.about.version || "")
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: root.about.description || ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Column {
+              width: parent.width
+              topPadding: Style.space(8)
+              spacing: Style.space(4)
+
+              Repeater {
+                model: [
+                  { label: "Version", value: (root.about.version || "?") + (root.commit ? " (commit " + root.commit + ")" : "") },
+                  { label: "Author", value: root.about.author || "" },
+                  { label: "License", value: root.about.license || "" },
+                  { label: "Homepage", value: String(root.about.homepage || "").replace(/^https?:\/\//, ""),
+                    link: root.about.homepage || "" }
+                ].filter(function(r) { return r.value })
+
+                Row {
+                  required property var modelData
+                  width: parent.width
+                  spacing: Style.space(12)
+
+                  Text {
+                    width: Style.space(80)
+                    textFormat: Text.PlainText
+                    text: modelData.label
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  Text {
+                    width: parent.width - Style.space(92)
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: modelData.value
+                    color: linkMouse.containsMouse ? Color.accent : root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.underline: linkMouse.containsMouse
+
+                    MouseArea {
+                      id: linkMouse
+                      anchors.fill: parent
+                      enabled: !!modelData.link
+                      hoverEnabled: true
+                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onClicked: root.openInCheckmk(modelData.link)
+                    }
+                  }
+                }
+              }
+            }
+          }
+
           // ---- Add or edit a server
           Column {
             visible: root.view === "edit"
@@ -1737,7 +1873,8 @@ Panel {
             textFormat: Text.PlainText
             text: root.view === "unlock" ? "enter unlock · esc back"
               : root.view === "edit" ? "tab next field · enter test · esc back"
-              : root.view === "servers" ? "enter edit · n add · x remove · u lock/unlock · h back"
+              : root.view === "about" ? "click the homepage to open it · i/h back"
+              : root.view === "servers" ? "enter edit · n add · x remove · u lock/unlock · i about · h back"
               : root.view === "hosts" ? "enter/l open host · 2 problems · o host in Checkmk · r refresh · s servers"
               : root.view === "host" ? "enter details, again opens Checkmk · h/backspace back · o open in Checkmk"
               : "enter details, again opens Checkmk · a " + (root.showAll ? "problems only" : "all services")
