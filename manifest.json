@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jimjonesbr.checkmk",
   "name": "Checkmk",
-  "version": "0.333",
+  "version": "0.4.0-beta.1",
   "author": "Jim Jones",
   "license": "MIT",
   "homepage": "https://github.com/jimjonesbr/omarchy-checkmk",

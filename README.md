@@ -10,6 +10,11 @@ A bar widget for the Omarchy shell that keeps an eye on one or more Checkmk serv
 Requires Checkmk 2.2 or newer, plus `curl` and `jq`, and `keyutils` or
 `secret-tool` to keep the secret.
 
+> **Beta.** So far tested only against Checkmk 2.5 Community running in a
+> container with simulated hosts (see [Development](#development)), not yet on a
+> production site. Expect rough edges, and please report them in the
+> [issues](https://github.com/jimjonesbr/omarchy-checkmk/issues).
+
 ## Install
 
 ```bash
@@ -93,14 +98,16 @@ After changing the code, run `omarchy-restart-shell`.
 ### Releasing a new version
 
 The version lives only in `manifest.json`; the panel's about page reads it from
-there. Use `MAJOR.MINOR.PATCH`: raise PATCH for fixes, MINOR for new features,
-MAJOR for changes that break existing setups (e.g. `servers.json`).
+there. It follows [semantic versioning](https://semver.org): raise PATCH for
+fixes, MINOR for new features, MAJOR for changes that break existing setups
+(e.g. `servers.json`). While the plugin is in beta, versions carry a `-beta.N`
+suffix (`0.4.0-beta.1`, `0.4.0-beta.2`, …); the first stable release is `1.0.0`.
 
 ```bash
-jq '.version = "0.4.0"' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
+jq '.version = "0.4.0-beta.2"' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
 omarchy plugin validate .
-git commit -am "Release 0.4.0"
-git tag -a v0.4.0 -m "0.4.0"
+git commit -am "Release 0.4.0-beta.2"
+git tag -a v0.4.0-beta.2 -m "0.4.0-beta.2"
 git push && git push --tags
 ```
 
