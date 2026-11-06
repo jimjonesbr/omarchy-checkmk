@@ -22,6 +22,7 @@
     "defaults": {
       "refreshIntervalSec": 60,
       "notifications": true,
+      "pulseOnCrit": true,
       "icon": "󰗶"
     },
     "schema": [
@@ -38,6 +39,12 @@
         "key": "notifications",
         "type": "boolean",
         "label": "Notify on state changes",
+        "defaultValue": true
+      },
+      {
+        "key": "pulseOnCrit",
+        "type": "boolean",
+        "label": "Pulse the icon on unhandled CRIT",
         "defaultValue": true
       },
       {

@@ -18,6 +18,7 @@ BarWidget {
   readonly property bool notifications: setting("notifications", true) !== false
   // Any Nerd Font glyph, the default is nf-md-heart_pulse
   readonly property string icon: setting("icon", "\u{f05f6}") || "\u{f05f6}"
+  readonly property bool pulseOnCrit: setting("pulseOnCrit", true) !== false
 
   // Last status written by bin/checkmk-poll, shared by every bar instance through the file
   property var status: null
@@ -28,6 +29,8 @@ BarWidget {
   readonly property bool unconfigured: !!status && status.unconfigured === true
   readonly property int worst: status && !status.unconfigured ? (status.worst || 0) : 0
   readonly property color stateColor: Model.stateColor(worst, bar ? bar.barForeground : Color.foreground)
+  // An unhandled CRIT makes the icon pulse; acknowledged problems and downtimes never count
+  readonly property bool pulsing: pulseOnCrit && reachable && worst === 2
 
   // There is one bar per monitor, but only the first instance polls, so every
   // state change is notified once
@@ -134,6 +137,15 @@ BarWidget {
       if (b === Qt.RightButton) root.openWebUi()
       else if (b === Qt.MiddleButton) root.refresh()
       else root.toggle()
+    }
+
+    SequentialAnimation on opacity {
+      running: root.pulsing
+      loops: Animation.Infinite
+      NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutSine }
+      NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
+      // Never leave the icon half faded once the CRIT is gone
+      onStopped: button.opacity = 1
     }
   }
 }
