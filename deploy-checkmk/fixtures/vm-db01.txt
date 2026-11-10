@@ -12,3 +12,5 @@ AgentOS: linux
 0 "Memory" mem_used_percent=61.4;80;90 RAM used: 61.4% of 32 GiB
 0 "Filesystem /var/lib/containers" fs_used_percent=54.0;80;90 54.0% used of 500 GiB
 0 "Interface ens3" in=1832000;;;|out=962000;;; [ens3] (up) speed 10 Gbit/s, in: 1.83 MB/s, out: 962 kB/s
+<<<local:cached(1794324160,300)>>>
+0 "PostgreSQL Backup - pg-sales" age_hours=6.2;26;50 Last base backup 6.2 h ago, 41 GiB

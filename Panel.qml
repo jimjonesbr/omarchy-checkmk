@@ -1213,6 +1213,7 @@ Panel {
                       text: Model.age(root.now - row.modelData.since)
                         + (row.modelData.handled ? " · handled" : "")
                         + (row.modelData.stale ? " · stale" : "")
+                        + (row.modelData.overdue && !row.modelData.stale ? " · overdue" : "")
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
@@ -1239,6 +1240,19 @@ Panel {
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
+                  }
+
+                  // When the data was produced and how often the service is checked
+                  Text {
+                    visible: row.isExpanded && text !== ""
+                    width: parent.width
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: row.isExpanded ? Model.timingText(row.modelData, root.now) : ""
+                    color: row.modelData.overdue ? Model.WARN_COLOR : root.dim
+                    opacity: row.modelData.overdue ? 1 : 0.8
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
                   }
 
                   // ---- Metrics of the expanded service, laid out like the network panel's details

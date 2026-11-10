@@ -83,7 +83,9 @@ fetch() { # server json
 
   local columns=(host_name description state plugin_output long_plugin_output
     last_state_change has_been_checked acknowledged scheduled_downtime_depth perf_data
-    host_state host_plugin_output host_last_state_change host_acknowledged host_scheduled_downtime_depth)
+    last_check check_interval cached_at cache_interval staleness
+    host_state host_plugin_output host_last_state_change host_acknowledged host_scheduled_downtime_depth
+    host_last_check host_check_interval host_staleness)
 
   local args=(-sS --max-time "$timeout" -G -w '\n%{http_code}' -H "Accept: application/json")
   for c in "${columns[@]}"; do args+=(--data-urlencode "columns=$c"); done
@@ -117,6 +119,17 @@ fetch() { # server json
         | capture("^(?<name>[^=]+)=(?<value>-?[0-9.]+)(?<unit>[^;]*)(;(?<warn>[^;]*))?(;(?<crit>[^;]*))?")
         | {name: (.name | ltrimstr("'") | rtrimstr("'")), value: (.value | tonumber), unit,
            warn: (.warn // ""), crit: (.crit // "")} ];
+    # When the data was produced and how often, in seconds. Local checks in a
+    # subfolder such as local/300/ run asynchronously and send cached data in
+    # between; only the commercial core (CMC) tells when that cache was made, the
+    # Nagios core of the community edition reports 0 and the time of the last
+    # agent contact instead. check_interval is in minutes (interval_length 60).
+    # Checkmk itself calls a service stale from a staleness of 1.5 on.
+    def timing($at; $every; $cachedAt; $cacheEvery; $staleness):
+      { checked: (if ($cachedAt // 0) > 0 then $cachedAt else ($at // 0) end),
+        interval: (if ($cacheEvery // 0) > 0 then $cacheEvery else (($every // 0) * 60 | round) end),
+        cached: (($cachedAt // 0) > 0),
+        overdue: (($staleness // 0) >= 1.5) };
 
     [ .value[].extensions | select(.has_been_checked == 1) ] as $rows
     | {
@@ -132,7 +145,7 @@ fetch() { # server json
               metrics: (.perf_data | metrics),
               since: .last_state_change,
               link: link(.host_name; .description)
-            } ]
+            } + timing(.last_check; .check_interval; .cached_at; .cache_interval; .staleness) ]
           + [ $rows | map(select(.host_state != 0)) | group_by(.host_name)[] | .[0] | {
               server: $server, serverName: $serverName,
               host: .host_name, service: "Host",
@@ -143,7 +156,7 @@ fetch() { # server json
               details: "", metrics: [],
               since: .host_last_state_change,
               link: start("view.py?view_name=hoststatus&host=" + (.host_name | @uri))
-            } ]
+            } + timing(.host_last_check; .host_check_interval; 0; 0; .host_staleness) ]
         )
       }
   ' <<<"$body" > "$out" 2>/dev/null || failed "Unexpected answer from $url"

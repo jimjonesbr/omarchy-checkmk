@@ -54,6 +54,17 @@ function age(seconds) {
   return days + "d" + (hours % 24 ? " " + (hours % 24) + "h" : "")
 }
 
+// "Checked 40s ago · every 1m", or for asynchronous checks with cached agent
+// data "Data from 3m ago · every 5m, cached". Empty for status files from before
+// the widget knew about it.
+function timingText(service, now) {
+  if (!service.checked) return ""
+  var text = (service.cached ? "Data from " : "Checked ") + age(now - service.checked) + " ago"
+  if (service.interval > 0) text += " · every " + age(service.interval) + (service.cached ? ", cached" : "")
+  if (service.overdue) text += " · overdue"
+  return text
+}
+
 function problems(services, includeHandled) {
   return services.filter(function(s) {
     return s.state !== 0 && (includeHandled || !s.handled)

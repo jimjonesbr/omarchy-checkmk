@@ -55,6 +55,12 @@ Left click opens the panel, middle click polls now, right click opens Checkmk.
 Acknowledged problems and problems in downtime are shown dimmed and neither
 colour the icon nor notify.
 
+An expanded service shows when it was last checked and how often. Services that
+Checkmk considers stale (no fresh result for 1.5 check intervals) are marked
+*overdue*. For asynchronous local checks (e.g. in `local/300/`) the commercial
+editions report when the agent produced the cached data. The community edition
+only knows the last agent contact, so there the time can be newer than the data.
+
 From a terminal or a Hyprland keybinding:
 
 ```bash
