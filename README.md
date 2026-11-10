@@ -47,10 +47,15 @@ Left click opens the panel, middle click polls now, right click opens Checkmk.
 | `1` / `2`         | hosts / problems                                 |
 | `g`               | service history: 4h, 25h, 1w, 1m, off            |
 | `a`               | problems only / all services                     |
+| `f`               | only CRIT, UNKNOWN, WARN or OK services, or all  |
 | `o`               | open in Checkmk                                  |
 | `s`               | servers                                          |
 | `i`               | about: version, author, license                  |
 | `r`               | poll now                                         |
+
+Clicking one of the counts on top (CRIT, UNKN, WARN, OK) shows only the
+services in that state, clicking it again shows all. Inside a host the counts
+are those of the host.
 
 Acknowledged problems and problems in downtime are shown dimmed and neither
 colour the icon nor notify.

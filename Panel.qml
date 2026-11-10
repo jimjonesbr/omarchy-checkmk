@@ -21,6 +21,8 @@ Panel {
   property string currentServer: ""
   property string currentHost: ""
   property bool showAll: false
+  // Only services in this state, -1 for all. Set by clicking a count or with "f".
+  property int stateFilter: -1
   property int cursor: 0
   // Expanded service row, shows full output and metrics
   property string expanded: ""
@@ -39,9 +41,17 @@ Panel {
   // Each list has its own rows, so a list never sees another one's rows while the view changes
   readonly property var serverRowsList: view === "servers" ? Model.serverRows(configured, polledServers) : []
   readonly property var hostRowsList: view === "hosts" ? hosts : []
-  readonly property var serviceRowsList: view === "host" ? Model.hostServices(services, currentServer, currentHost)
-    : view === "problems" ? (showAll ? services : Model.problems(services, true))
-    : []
+  readonly property var serviceRowsList: Model.byState(
+    view === "host" ? Model.hostServices(services, currentServer, currentHost)
+    : view === "problems" ? (showAll || stateFilter >= 0 ? services : Model.problems(services, true))
+    : [], stateFilter)
+  // The counts on top: of the open host, otherwise of all servers
+  readonly property var stateCounts: {
+    var c = view === "host" ? (hostInfo ? hostInfo.counts : null) : (status ? status.counts : null)
+    c = c || {}
+    return [{ state: 2, count: c.crit || 0 }, { state: 3, count: c.unknown || 0 },
+            { state: 1, count: c.warn || 0 }, { state: 0, count: c.ok || 0 }]
+  }
   readonly property var rows: view === "servers" ? serverRowsList : view === "hosts" ? hostRowsList : serviceRowsList
   readonly property int now: hostWidget ? hostWidget.now : 0
   readonly property color fg: bar ? bar.foreground : Color.foreground
@@ -109,6 +119,7 @@ Panel {
     if (view === name) return
     if (name === "hosts" || name === "problems") mainView = name
     view = name
+    stateFilter = -1
     cursor = 0
     expanded = ""
     confirmDelete = ""
@@ -120,6 +131,24 @@ Panel {
     currentServer = server
     currentHost = host
     setView("host")
+  }
+
+  // Show only the services in this state, or all again when it is already the filter.
+  // Outside a host the problems list does the filtering.
+  function filterState(state) {
+    if (view !== "host" && view !== "problems") setView("problems")
+    stateFilter = stateFilter === state ? -1 : state
+    cursor = 0
+    expanded = ""
+    scroll.contentY = 0
+  }
+
+  // "f": the next state that has services, CRIT, UNKNOWN, WARN, OK, then all again
+  function cycleFilter() {
+    var states = stateCounts.filter(function(e) { return e.count > 0 }).map(function(e) { return e.state })
+    var next = states.indexOf(stateFilter) + 1
+    if (stateFilter >= 0 && next >= states.length) filterState(stateFilter)
+    else if (states.length) filterState(states[stateFilter < 0 ? 0 : next])
   }
 
   function selectWhere(test) {
@@ -762,6 +791,7 @@ Panel {
         else if (t === "i") root.view === "about" ? root.back() : root.showAbout()
         else if (t === "n" && root.view === "servers") root.showEdit("")
         else if (t === "g") root.cycleGraph()
+        else if (t === "f" && !root.settingsView) root.cycleFilter()
         else if (t === "u") {
           var sel = root.view === "servers" ? root.rows[root.cursor] : null
           if (sel && sel.secretStore !== "file") sel.unlocked ? root.lockServer(sel.id) : root.showUnlock(sel.id)
@@ -770,7 +800,7 @@ Panel {
         else if (t === "1") root.setView("hosts")
         else if (t === "2") root.setView("problems")
         else if (t === "\b") root.back()
-        else if (t === "a" && root.view === "problems") { root.showAll = !root.showAll; root.cursor = 0 }
+        else if (t === "a" && root.view === "problems") { root.showAll = !root.showAll; root.stateFilter = -1; root.cursor = 0 }
         else if (t === "r" && root.hostWidget) root.hostWidget.refresh()
         else if (t === "o" && !root.settingsView) {
           var row = root.rows[root.cursor]
@@ -906,29 +936,51 @@ Panel {
             visible: !root.settingsView
             spacing: Style.space(18)
             Repeater {
-              model: [
-                { state: 2, count: root.status ? root.status.counts.crit : 0 },
-                { state: 3, count: root.status ? root.status.counts.unknown : 0 },
-                { state: 1, count: root.status ? root.status.counts.warn : 0 },
-                { state: 0, count: root.status ? root.status.counts.ok : 0 }
-              ]
-              Row {
-                spacing: Style.space(5)
-                opacity: modelData.count > 0 ? 1 : 0.45
-                Text {
-                  id: countText
-                  text: modelData.count
-                  color: modelData.count > 0 ? root.colorFor(modelData.state) : root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.title
-                  font.bold: true
+              model: root.stateCounts
+              // Clicking a count shows only the services in that state
+              Item {
+                id: countEntry
+                readonly property bool active: root.stateFilter === modelData.state
+                width: countRow.implicitWidth
+                height: countRow.implicitHeight
+                // With a filter set the other counts step back
+                opacity: modelData.count === 0 ? 0.45 : (root.stateFilter >= 0 && !active ? 0.6 : 1)
+
+                Row {
+                  id: countRow
+                  spacing: Style.space(5)
+                  Text {
+                    id: countText
+                    text: modelData.count
+                    color: modelData.count > 0 ? root.colorFor(modelData.state) : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title
+                    font.bold: true
+                  }
+                  Text {
+                    anchors.baseline: countText.baseline
+                    text: Model.stateName(modelData.state)
+                    color: countEntry.active ? root.fg : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
                 }
-                Text {
-                  anchors.baseline: countText.baseline
-                  text: Model.stateName(modelData.state)
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
+
+                Rectangle {
+                  visible: countEntry.active
+                  anchors.top: parent.bottom
+                  anchors.topMargin: Style.space(2)
+                  width: parent.width
+                  height: 2
+                  color: Color.accent
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(4)
+                  enabled: modelData.count > 0 || countEntry.active
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.filterState(modelData.state)
                 }
               }
             }
@@ -956,7 +1008,9 @@ Panel {
                    : [{ id: "back", label: "‹ SERVERS" },
                       { id: "title", label: root.editServer ? root.editServer.name.toUpperCase() : "NEW SERVER" }])
                 : [{ id: "hosts", label: "HOSTS " + root.hosts.length },
-                   { id: "problems", label: (root.showAll ? "ALL SERVICES " + root.services.length
+                   { id: "problems", label: (root.view === "problems" && root.stateFilter >= 0
+                     ? Model.stateName(root.stateFilter) + " SERVICES " + root.serviceRowsList.length
+                     : root.showAll ? "ALL SERVICES " + root.services.length
                      : "PROBLEMS " + Model.problems(root.services, true).length) }]
 
               PanelSectionHeader {
@@ -988,7 +1042,9 @@ Panel {
           Text {
             visible: root.rows.length === 0 && !root.settingsView
             textFormat: Text.PlainText
-            text: !root.status ? "No data yet" : root.view === "hosts" ? "No hosts" : "All " + root.services.length + " services OK"
+            text: !root.status ? "No data yet" : root.view === "hosts" ? "No hosts"
+              : root.stateFilter >= 0 ? "No " + Model.stateName(root.stateFilter) + " services"
+              : "All " + root.services.length + " services OK"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -1889,10 +1945,10 @@ Panel {
               : root.view === "edit" ? "tab next field · enter test · esc back"
               : root.view === "about" ? "click the homepage to open it · i/h back"
               : root.view === "servers" ? "enter edit · n add · x remove · u lock/unlock · i about · h back"
-              : root.view === "hosts" ? "enter/l open host · 2 problems · o host in Checkmk · r refresh · s servers"
-              : root.view === "host" ? "enter details, again opens Checkmk · h/backspace back · o open in Checkmk"
+              : root.view === "hosts" ? "enter/l open host · 2 problems · f filter · o host in Checkmk · r refresh · s servers"
+              : root.view === "host" ? "enter details, again opens Checkmk · f filter · h/backspace back · o open in Checkmk"
               : "enter details, again opens Checkmk · a " + (root.showAll ? "problems only" : "all services")
-                + " · 1 hosts · r refresh"
+                + " · f filter · 1 hosts · r refresh"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

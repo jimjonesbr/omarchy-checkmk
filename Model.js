@@ -65,6 +65,12 @@ function timingText(service, now) {
   return text
 }
 
+// All services when state is -1
+function byState(services, state) {
+  if (state < 0) return services
+  return services.filter(function(s) { return s.state === state })
+}
+
 function problems(services, includeHandled) {
   return services.filter(function(s) {
     return s.state !== 0 && (includeHandled || !s.handled)
