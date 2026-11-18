@@ -100,17 +100,5 @@ plain file, so only remember the password of a read-only account. Either way,
 
 ## Development
 
-`deploy-checkmk/` starts a disposable Checkmk in podman with fake hosts:
-
-```bash
-deploy-checkmk/checkmk.sh up       # http://localhost:8080/cmk/ (cmkadmin/cmkadmin)
-deploy-checkmk/lab-hosts.sh sync   # hosts from deploy-checkmk/fixtures/
-deploy-checkmk/lab-hosts.sh state vm-db02 "Replication Check - pg-hr" 2
-```
-
-The read-only API user is `omarchy`, with its secret in `deploy-checkmk/omarchy.secret`.
-`CMK_LAB=staging CMK_WEB_PORT=8081` runs a second instance from `fixtures-staging/`.
-
-After changing the code, run `omarchy-restart-shell`.
-
-How to cut a release is described in [RELEASING.md](RELEASING.md).
+Want to work on the plugin? [CONTRIBUTING.md](CONTRIBUTING.md) explains how to
+run a test Checkmk on your machine and how releases are made.
