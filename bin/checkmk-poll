@@ -163,8 +163,10 @@ fetch() { # server json
 }
 
 servers="$("$BIN/checkmk-config" list)" || servers="[]"
-previous="$(cat "$STATUS" 2>/dev/null)"
-jq -e . >/dev/null 2>&1 <<<"$previous" || previous='{}'
+# Large JSON goes to jq in files: as an argument, a site with thousands of
+# services exceeds the size limit of the command line
+PREVIOUS="$WORK/previous.json"
+jq -e . "$STATUS" > "$PREVIOUS" 2>/dev/null || echo '{}' > "$PREVIOUS"
 
 write_status() {
   cat > "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
@@ -183,14 +185,15 @@ while IFS= read -r server; do
 done < <(jq -c '.[]' <<<"$servers")
 wait
 
-results="$(for id in $(jq -r '.[].id' <<<"$servers"); do
+for id in $(jq -r '.[].id' <<<"$servers"); do
   jq -c --arg id "$id" '{($id): .}' "$WORK/$id.json" 2>/dev/null ||
     jq -nc --arg id "$id" '{($id): {ok: false, error: "Poll failed", services: []}}'
-done | jq -s 'add')"
+done | jq -s 'add' > "$WORK/results.json"
 
 # Merge the servers. One that failed keeps its last known services, marked stale.
-jq -n --argjson servers "$servers" --argjson results "$results" --argjson previous "$previous" '
-  def severity: if . == 2 then 3 elif . == 3 then 2 elif . == 1 then 1 else 0 end;
+jq -n --argjson servers "$servers" --slurpfile results "$WORK/results.json" --slurpfile previous "$PREVIOUS" '
+  $results[0] as $results | $previous[0] as $previous
+  | def severity: if . == 2 then 3 elif . == 3 then 2 elif . == 1 then 1 else 0 end;
   def worst: max_by(severity) // 0;
   def count($state): map(select(.state == $state)) | length;
   def start($url; $view): $url + "/check_mk/index.py?start_url=" + ($view | @uri);
@@ -257,8 +260,9 @@ while IFS="$SEP" read -r kind name detail url; do
   else
     send_notification low "Checkmk $name reachable again" "$url"
   fi
-done < <(jq -r --argjson prev "$previous" '
-  ($prev.servers // [] | map({key: .id, value: (if .locked then "locked" else .ok end)}) | from_entries) as $before
+done < <(jq -r --slurpfile prev "$PREVIOUS" '
+  $prev[0] as $prev
+  | ($prev.servers // [] | map({key: .id, value: (if .locked then "locked" else .ok end)}) | from_entries) as $before
   | .servers[] | . as $s
   | select(($s.locked | not) and ($before | has($s.id)) and $before[$s.id] != "locked" and $before[$s.id] != $s.ok)
   | [(if $s.ok then "up" else "down" end), $s.name, $s.error, $s.url] | join("\u001f")
@@ -266,9 +270,10 @@ done < <(jq -r --argjson prev "$previous" '
 
 # ---- Services that changed state. Services of a server that failed are stale, not
 # changed, so they never show up here.
-changes="$(jq -c --argjson prev "$previous" '
+changes="$(jq -c --slurpfile prev "$PREVIOUS" '
   def key: (.server // "") + "\u0000" + .host + "\u0000" + .service;
-  ($prev.services // [] | map(select(.stale | not) | {key: key, value: .state}) | from_entries) as $before
+  $prev[0] as $prev
+  | ($prev.services // [] | map(select(.stale | not) | {key: key, value: .state}) | from_entries) as $before
   | [ .services[] | select((.handled | not) and (.stale | not))
       | key as $k | select(($before | has($k)) and $before[$k] != .state) | . + {before: $before[$k]} ]
 ' "$STATUS")"
