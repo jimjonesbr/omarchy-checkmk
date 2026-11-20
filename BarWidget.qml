@@ -139,21 +139,29 @@ BarWidget {
     }
   }
 
-  BarIconButton {
-    id: button
+  // The pulse fades this layer, not the button: the button's own opacity is a
+  // binding that dims it while no server answers, and setting it would end that
+  // binding for good. The two opacities multiply.
+  Item {
+    id: pulseLayer
     anchors.fill: parent
-    bar: root.bar
-    text: root.icon
-    foreground: root.stateColor
-    useActiveColor: false
-    dimmed: !root.reachable
-    slotSize: Style.bar.statusSlot
-    tooltipText: root.opened ? "" : root.unconfigured ? "Checkmk: click to set up the connection" : Model.summary(root.status)
 
-    onPressed: function(b) {
-      if (b === Qt.RightButton) root.openWebUi()
-      else if (b === Qt.MiddleButton) root.refresh()
-      else root.toggle()
+    BarIconButton {
+      id: button
+      anchors.fill: parent
+      bar: root.bar
+      text: root.icon
+      foreground: root.stateColor
+      useActiveColor: false
+      dimmed: !root.reachable
+      slotSize: Style.bar.statusSlot
+      tooltipText: root.opened ? "" : root.unconfigured ? "Checkmk: click to set up the connection" : Model.summary(root.status)
+
+      onPressed: function(b) {
+        if (b === Qt.RightButton) root.openWebUi()
+        else if (b === Qt.MiddleButton) root.refresh()
+        else root.toggle()
+      }
     }
 
     SequentialAnimation on opacity {
@@ -162,7 +170,7 @@ BarWidget {
       NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutSine }
       NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
       // Never leave the icon half faded once the CRIT is gone
-      onStopped: button.opacity = 1
+      onStopped: pulseLayer.opacity = 1
     }
   }
 }
