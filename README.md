@@ -3,7 +3,8 @@
 A bar widget for the Omarchy shell that keeps an eye on one or more Checkmk servers.
 
 - The bar icon takes the colour of the worst unhandled problem: amber for WARN,
-  orange for UNKNOWN, red for CRIT. An unhandled CRIT also makes it pulse.
+  orange for UNKNOWN, red for CRIT, with the number of unhandled problems next
+  to it. An unhandled CRIT also makes it pulse.
 - A popup lists hosts and problems, with service details, metrics and history graphs.
 - A desktop notification tells when a service changes state, with the host and
   the check output; clicking it opens that service in the panel. Like Checkmk's
@@ -107,7 +108,8 @@ omarchy-shell checkmk refresh
 ## Settings
 
 The widget settings in `~/.config/omarchy/shell.json` are `refreshIntervalSec`
-(default 60), `notifications`, `pulseOnCrit` and `icon` (any Nerd Font glyph).
+(default 60), `notifications`, `pulseOnCrit`, `showCount` and `icon` (any Nerd
+Font glyph).
 
 The servers are kept in `~/.config/omarchy-checkmk/servers.json` (see
 `servers.example.json`). If the Checkmk site id is not the last part of the URL,
