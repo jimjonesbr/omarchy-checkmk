@@ -10,8 +10,8 @@ A bar widget for the Omarchy shell that keeps an eye on one or more Checkmk serv
 Requires Checkmk 2.2 or newer, plus `curl` and `jq`, and `keyutils` or
 `secret-tool` to keep the secret.
 
-> **Beta.** This is still under development not yet read for production use.Expect rough edges, and please report them in the
-> [issues](https://github.com/jimjonesbr/omarchy-checkmk/issues).
+> **Beta.** This is still under development and not yet ready for production use.
+> Expect rough edges, and please report them in the [issues](https://github.com/jimjonesbr/omarchy-checkmk/issues).
 
 ## Install
 
