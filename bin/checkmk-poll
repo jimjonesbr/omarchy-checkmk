@@ -215,7 +215,7 @@ jq -n --slurpfile servers "$WORK/servers.json" --slurpfile results "$WORK/result
   def start($url; $view): $url + "/check_mk/index.py?start_url=" + ($view | @uri);
 
   [ $servers[] | . as $s | $results[$s.id] as $r
-    | {id, name, url, ok: $r.ok, locked: ($r.locked // false), error: $r.error,
+    | {id, name, url, muted: ($s.muted == true), ok: $r.ok, locked: ($r.locked // false), error: $r.error,
        services: (if $r.ok then $r.services
                   else [ ($previous.services // [])[] | select(.server == $s.id) | . + {stale: true} ] end)}
   ] as $polled
@@ -232,7 +232,7 @@ jq -n --slurpfile servers "$WORK/servers.json" --slurpfile results "$WORK/result
       # Opened by a right click on the icon
       url: $servers[0].url,
       servers: [ $polled[] | . as $p | {
-          id, name, url, ok, locked, error,
+          id, name, url, muted, ok, locked, error,
           hosts: ($services | map(select(.server == $p.id) | .host) | unique | length),
           counts: ($services | map(select(.server == $p.id and (.isHost | not)))
             | {ok: count(0), warn: count(1), crit: count(2), unknown: count(3)})
@@ -274,7 +274,7 @@ read -r down up < <(jq -r --slurpfile prev "$PREVIOUS" '
   $prev[0] as $prev
   | ($prev.servers // [] | map({key: .id, value: (if .locked then "locked" else .ok end)}) | from_entries) as $before
   | [ .servers[] | . as $s
-      | select(($s.locked | not) and ($before | has($s.id)) and $before[$s.id] != "locked" and $before[$s.id] != $s.ok) ]
+      | select(($s.muted | not) and ($s.locked | not) and ($before | has($s.id)) and $before[$s.id] != "locked" and $before[$s.id] != $s.ok) ]
   | "\(map(select(.ok | not)) | length) \(map(select(.ok)) | length)"
 ' "$STATUS")
 
@@ -295,8 +295,9 @@ read -r count crit warn unknown ok < <(jq -r --slurpfile prev "$PREVIOUS" '
   def key: (.server // "") + "\u0000" + .host + "\u0000" + .service;
   def count($state): map(select(.state == $state)) | length;
   $prev[0] as $prev
+  | [ .servers[] | select(.muted) | .id ] as $muted
   | ($prev.services // [] | map(select(.stale | not) | {key: key, value: .state}) | from_entries) as $before
-  | [ .services[] | select((.handled | not) and (.stale | not))
+  | [ .services[] | select((.handled | not) and (.stale | not)) | . as $x | select($muted | index($x.server) | not)
       | key as $k | select(($before | has($k)) and $before[$k] != .state) ]
   | "\(length) \(count(2)) \(count(1)) \(count(3)) \(count(0))"
 ' "$STATUS")

@@ -377,6 +377,7 @@ Panel {
     hostFilterField.text = s ? (s.hostFilter || "") : ""
     insecureToggle.checked = !!s && s.insecure === true
     rememberToggle.checked = !!s && s.remember !== false
+    muteToggle.checked = !!s && s.muted === true
     proxyField.text = s ? (s.proxy || "") : ""
     browserField.text = s ? (s.browser || "") : ""
     advancedOpen = proxyField.text !== "" || browserField.text !== ""
@@ -395,6 +396,7 @@ Panel {
       hostFilter: hostFilterField.text.trim(),
       insecure: insecureToggle.checked,
       remember: rememberToggle.checked,
+      muted: muteToggle.checked,
       proxy: proxyField.text.trim(),
       browser: browserField.text.trim()
     })
@@ -1595,6 +1597,7 @@ Panel {
                     text: serverRow.modelData.disconnected ? "disconnected"
                       : (!serverRow.modelData.polled ? "not polled yet"
                         : serverRow.modelData.hosts + (serverRow.modelData.hosts === 1 ? " host" : " hosts"))
+                        + (serverRow.modelData.muted ? " · muted" : "")
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -1846,6 +1849,16 @@ Panel {
               width: parent.width
               label: "Accept self-signed certificates"
               description: "Only for servers without a trusted TLS certificate"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onClicked: checked = !checked
+            }
+
+            Toggle {
+              id: muteToggle
+              width: parent.width
+              label: "Mute notifications"
+              description: "Still polled and shown, but no desktop notifications from this server"
               foreground: root.fg
               fontFamily: root.fontFamily
               onClicked: checked = !checked

@@ -116,6 +116,7 @@ function serverRows(configured, polled) {
       secretStore: c.secretStore, unlocked: c.unlocked === true, expires: c.expires || "",
       remember: c.remember !== false,
       disconnected: c.disconnected === true,
+      muted: c.muted === true,
       polled: !!live,
       ok: live ? live.ok : false,
       locked: live ? live.locked === true : false,
