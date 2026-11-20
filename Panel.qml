@@ -1601,9 +1601,14 @@ Panel {
                   width: Style.space(10)
                   height: width
                   radius: width / 2
-                  color: serverRow.modelData.disconnected || !serverRow.modelData.polled ? root.dim
+                  // A disconnected server gets a ring instead of a dot: the shape tells it
+                  // apart in any theme, where a colour may look like the others
+                  color: serverRow.modelData.disconnected ? "transparent"
+                    : !serverRow.modelData.polled ? root.dim
                     : serverRow.modelData.ok ? Model.OK_COLOR
                     : serverRow.modelData.locked ? root.colorFor(1) : root.urgent
+                  border.width: serverRow.modelData.disconnected ? Style.space(2) : 0
+                  border.color: root.dim
                 }
 
                 Column {
