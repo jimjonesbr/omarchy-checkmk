@@ -78,9 +78,10 @@ colour the icon nor notify.
 
 A server can be disconnected for a while, with *Disconnect* in its form or `d`
 in the server list: it is no longer polled and leaves the icon, the lists and
-the notifications, but keeps its settings and password. *Connect* brings it
-back. *Mute notifications* in the form keeps a server polled and shown, but
-silences its notifications.
+the notifications. It keeps its settings and a remembered password; a password
+kept in memory only is forgotten. *Connect* brings the server back and asks for
+a forgotten password first. *Mute notifications* in the form keeps a server
+polled and shown, but silences its notifications.
 
 An expanded service shows when it was last checked and how often. Services that
 Checkmk considers stale (no fresh result for 1.5 check intervals) are marked

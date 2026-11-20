@@ -515,6 +515,9 @@ Panel {
   property string unlockReturn: "hosts"
   property bool unlockBusy: false
   property string unlockMessage: ""
+  // Asked for the password of a disconnected server: it connects once accepted,
+  // and Cancel leaves it disconnected
+  property bool unlockConnects: false
   readonly property bool unlockRemembers: !!unlockServer && unlockServer.remember !== false
   readonly property var unlockServer: {
     for (var i = 0; i < configured.length; i++) if (configured[i].id === unlockId) return configured[i]
@@ -522,9 +525,10 @@ Panel {
     return null
   }
 
-  function showUnlock(id) {
+  function showUnlock(id, connects) {
     if (view !== "unlock") unlockReturn = settingsView ? "servers" : mainView
     unlockId = id
+    unlockConnects = connects === true
     unlockMessage = ""
     unlockField.text = ""
     setView("unlock")
@@ -548,13 +552,21 @@ Panel {
     lockProc.running = true
   }
 
-  // A disconnected server is not polled; settings and password stay. No password
-  // is needed, so a locked server can be disconnected too.
+  // A disconnected server is not polled. Its settings stay, and a remembered
+  // password; one kept in memory only is forgotten. No password is needed, so a
+  // locked server can be disconnected too. Connecting asks for the password when
+  // there is none at hand.
   function toggleConnection(id) {
     if (!hostWidget || !id || connectProc.running) return
     var s = null
     for (var i = 0; i < configured.length; i++) if (configured[i].id === id) s = configured[i]
     if (!s) return
+    // Without a password at hand, ask for it first and connect once it is accepted
+    if (s.disconnected === true && (s.secretStore === "none" || (s.secretStore === "session" && s.unlocked !== true))) {
+      showUnlock(id, true)
+      return
+    }
+    connectProc.serverId = id
     connectProc.command = [hostWidget.configTool, s.disconnected === true ? "connect" : "disconnect", id]
     connectProc.running = true
   }
@@ -574,7 +586,13 @@ Panel {
         var result = null
         try { result = JSON.parse(text) } catch (e) {}
         root.unlockBusy = false
-        if (result && result.ok) {
+        if (result && result.ok && root.unlockConnects) {
+          root.unlockConnects = false
+          connectProc.serverId = root.unlockId
+          connectProc.command = [root.hostWidget.configTool, "connect", root.unlockId]
+          connectProc.running = true
+          root.setView(root.unlockReturn)
+        } else if (result && result.ok) {
           root.configChanged()
           // Another locked server is next, otherwise back to where we came from
           var next = root.lockedServers.filter(function(s) { return s.id !== root.unlockId })
@@ -597,11 +615,17 @@ Panel {
 
   Process {
     id: connectProc
+    property string serverId: ""
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var result = null
         try { result = JSON.parse(text) } catch (e) {}
+        if (result && result.ok && result.needsSecret) {
+          root.configChanged()
+          root.showUnlock(connectProc.serverId)
+          return
+        }
         if (root.view === "edit") {
           root.setupOk = !!result && result.ok === true
           root.setupMessage = result ? result.message : "The helper script failed"
@@ -844,7 +868,9 @@ Panel {
         else if (t === "d" && root.view === "servers" && root.rows[root.cursor]) root.toggleConnection(root.rows[root.cursor].id)
         else if (t === "u") {
           var sel = root.view === "servers" ? root.rows[root.cursor] : null
-          if (sel && sel.secretStore !== "file") sel.unlocked ? root.lockServer(sel.id) : root.showUnlock(sel.id)
+          // A disconnected server is not polled, so there is nothing to lock or unlock
+          if (sel && sel.disconnected) {}
+          else if (sel && sel.secretStore !== "file") sel.unlocked ? root.lockServer(sel.id) : root.showUnlock(sel.id)
           else if (root.lockedServers.length > 0) root.showUnlock(root.lockedServers[0].id)
         }
         else if (t === "1") root.setView("hosts")
@@ -1638,10 +1664,11 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                   }
-                  // Time left of the password, or locked
+                  // Time left of the password, or locked; nothing to say while disconnected
                   Text {
-                    visible: serverRow.modelData.secretStore === "session" || serverRow.modelData.secretStore === "none"
-                      || serverRow.modelData.expires !== ""
+                    visible: !serverRow.modelData.disconnected
+                      && (serverRow.modelData.secretStore === "session" || serverRow.modelData.secretStore === "none"
+                        || serverRow.modelData.expires !== "")
                     textFormat: Text.PlainText
                     text: serverRow.modelData.unlocked ? serverRow.modelData.expires + " left · lock" : "locked · unlock"
                     color: serverRow.modelData.unlocked ? root.dim : root.colorFor(1)
@@ -2061,7 +2088,7 @@ Panel {
             Row {
               spacing: Style.space(8)
               Button {
-                text: "Unlock"
+                text: root.unlockConnects ? "Connect" : "Unlock"
                 bordered: true
                 foreground: root.fg
                 fontFamily: root.fontFamily
@@ -2105,7 +2132,7 @@ Panel {
             width: parent.width
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
-            text: root.view === "unlock" ? "enter unlock · esc back"
+            text: root.view === "unlock" ? (root.unlockConnects ? "enter connect · esc cancel" : "enter unlock · esc back")
               : root.view === "edit" ? "tab next field · enter test · esc back"
               : root.view === "about" ? "click the homepage to open it · i/h back"
               : root.view === "servers" ? "enter edit · n add · x remove · d disconnect/connect · u lock/unlock · i about · h back"
