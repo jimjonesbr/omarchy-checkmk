@@ -59,17 +59,17 @@ The version lives only in `manifest.json`; the panel's about page reads it from
 there. It follows [semantic versioning](https://semver.org): raise PATCH for
 fixes, MINOR for new features, MAJOR for changes that break existing setups
 (e.g. `servers.json`). While the plugin is in beta, versions carry a `-beta.N`
-suffix (`0.4.0-beta.1`, `0.4.0-beta.2`, …); the first stable release is `1.0.0`.
+suffix (`0.5.0-beta.1`, `0.5.0-beta.2`, …); the first stable release is `1.0.0`.
 
 Changes go under *Unreleased* in [CHANGELOG.md](CHANGELOG.md) as they are made.
 For a release, that heading becomes the version and date, e.g.
-`## 0.4.0-beta.2 (2026-11-20)`. Then:
+`## 0.5.0-beta.2 (2026-12-01)`. Then:
 
 ```bash
-jq '.version = "0.4.0-beta.2"' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
+jq '.version = "0.5.0-beta.2"' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
 omarchy plugin validate .
-git commit -am "Release 0.4.0-beta.2"
-git tag -a v0.4.0-beta.2 -m "0.4.0-beta.2"
+git commit -am "Release 0.5.0-beta.2"
+git tag -a v0.5.0-beta.2 -m "0.5.0-beta.2"
 git push && git push --tags
 ```
 
