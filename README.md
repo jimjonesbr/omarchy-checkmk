@@ -38,7 +38,9 @@ omarchy plugin update
 ```
 
 Versions follow [semantic versioning](https://semver.org): only a new major
-version may need changes to your setup (e.g. `servers.json`). During the beta, versions carry a `-beta.N` suffix.
+version may need changes to your setup (e.g. `servers.json`). During the beta,
+versions carry a `-beta.N` suffix. [CHANGELOG.md](CHANGELOG.md) lists what
+changed.
 
 ## Remove
 
