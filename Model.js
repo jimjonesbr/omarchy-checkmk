@@ -79,6 +79,7 @@ function problems(services, includeHandled) {
 
 function summary(status) {
   if (!status) return "Checkmk: no data yet"
+  if (status.disconnected) return "Checkmk: all servers disconnected"
   var c = status.counts || {}
   var parts = []
   if (c.crit) parts.push(c.crit + " CRIT")
@@ -114,6 +115,7 @@ function serverRows(configured, polled) {
       id: c.id, name: c.name, url: c.url, user: c.user,
       secretStore: c.secretStore, unlocked: c.unlocked === true, expires: c.expires || "",
       remember: c.remember !== false,
+      disconnected: c.disconnected === true,
       polled: !!live,
       ok: live ? live.ok : false,
       locked: live ? live.locked === true : false,

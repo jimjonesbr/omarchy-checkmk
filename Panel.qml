@@ -546,6 +546,17 @@ Panel {
     lockProc.running = true
   }
 
+  // A disconnected server is not polled; settings and password stay. No password
+  // is needed, so a locked server can be disconnected too.
+  function toggleConnection(id) {
+    if (!hostWidget || !id || connectProc.running) return
+    var s = null
+    for (var i = 0; i < configured.length; i++) if (configured[i].id === id) s = configured[i]
+    if (!s) return
+    connectProc.command = [hostWidget.configTool, s.disconnected === true ? "connect" : "disconnect", id]
+    connectProc.running = true
+  }
+
   // The secret goes over stdin, never argv, and is not kept in QML afterwards
   Process {
     id: unlockProc
@@ -579,6 +590,23 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.configChanged()
+    }
+  }
+
+  Process {
+    id: connectProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var result = null
+        try { result = JSON.parse(text) } catch (e) {}
+        if (root.view === "edit") {
+          root.setupOk = !!result && result.ok === true
+          root.setupMessage = result ? result.message : "The helper script failed"
+          root.setupWarnings = []
+        }
+        root.configChanged()
+      }
     }
   }
 
@@ -811,6 +839,7 @@ Panel {
         else if (t === "n" && root.view === "servers") root.showEdit("")
         else if (t === "g") root.cycleGraph()
         else if (t === "f" && !root.settingsView) root.cycleFilter()
+        else if (t === "d" && root.view === "servers" && root.rows[root.cursor]) root.toggleConnection(root.rows[root.cursor].id)
         else if (t === "u") {
           var sel = root.view === "servers" ? root.rows[root.cursor] : null
           if (sel && sel.secretStore !== "file") sel.unlocked ? root.lockServer(sel.id) : root.showUnlock(sel.id)
@@ -1061,7 +1090,9 @@ Panel {
           Text {
             visible: root.rows.length === 0 && !root.settingsView
             textFormat: Text.PlainText
-            text: !root.status ? "No data yet" : root.view === "hosts" ? "No hosts"
+            text: !root.status ? "No data yet"
+              : root.status.disconnected ? "All servers are disconnected. Press s to connect one."
+              : root.view === "hosts" ? "No hosts"
               : root.stateFilter >= 0 ? "No " + Model.stateName(root.stateFilter) + " services"
               : "All " + root.services.length + " services OK"
             color: root.dim
@@ -1506,7 +1537,7 @@ Panel {
                   width: Style.space(10)
                   height: width
                   radius: width / 2
-                  color: !serverRow.modelData.polled ? root.dim
+                  color: serverRow.modelData.disconnected || !serverRow.modelData.polled ? root.dim
                     : serverRow.modelData.ok ? Model.OK_COLOR
                     : serverRow.modelData.locked ? root.colorFor(1) : root.urgent
                 }
@@ -1561,8 +1592,9 @@ Panel {
 
                   Text {
                     textFormat: Text.PlainText
-                    text: !serverRow.modelData.polled ? "not polled yet"
-                      : serverRow.modelData.hosts + (serverRow.modelData.hosts === 1 ? " host" : " hosts")
+                    text: serverRow.modelData.disconnected ? "disconnected"
+                      : (!serverRow.modelData.polled ? "not polled yet"
+                        : serverRow.modelData.hosts + (serverRow.modelData.hosts === 1 ? " host" : " hosts"))
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -1582,6 +1614,20 @@ Panel {
                       anchors.margins: -Style.space(4)
                       cursorShape: Qt.PointingHandCursor
                       onClicked: serverRow.modelData.unlocked ? root.lockServer(serverRow.modelData.id) : root.showUnlock(serverRow.modelData.id)
+                    }
+                  }
+                  Text {
+                    visible: serverRow.selected && !serverRow.confirming
+                    text: serverRow.modelData.disconnected ? "connect" : "disconnect"
+                    color: serverRow.modelData.disconnected ? Color.accent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+
+                    MouseArea {
+                      anchors.fill: parent
+                      anchors.margins: -Style.space(4)
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.toggleConnection(serverRow.modelData.id)
                     }
                   }
                   Text {
@@ -1886,13 +1932,24 @@ Panel {
                 }
               }
 
-              Button {
+              Row {
                 visible: !!root.editServer
                 anchors.right: parent.right
-                text: root.confirmDelete === root.editId ? "Really remove?" : "Remove"
-                foreground: root.confirmDelete === root.editId ? root.urgent : root.dim
-                fontFamily: root.fontFamily
-                onClicked: root.requestDelete(root.editId)
+                spacing: Style.space(8)
+
+                // Takes effect right away, without Save: no password needed
+                Button {
+                  text: root.editServer && root.editServer.disconnected === true ? "Connect" : "Disconnect"
+                  foreground: root.dim
+                  fontFamily: root.fontFamily
+                  onClicked: root.toggleConnection(root.editId)
+                }
+                Button {
+                  text: root.confirmDelete === root.editId ? "Really remove?" : "Remove"
+                  foreground: root.confirmDelete === root.editId ? root.urgent : root.dim
+                  fontFamily: root.fontFamily
+                  onClicked: root.requestDelete(root.editId)
+                }
               }
             }
 
@@ -2013,7 +2070,7 @@ Panel {
             text: root.view === "unlock" ? "enter unlock · esc back"
               : root.view === "edit" ? "tab next field · enter test · esc back"
               : root.view === "about" ? "click the homepage to open it · i/h back"
-              : root.view === "servers" ? "enter edit · n add · x remove · u lock/unlock · i about · h back"
+              : root.view === "servers" ? "enter edit · n add · x remove · d disconnect/connect · u lock/unlock · i about · h back"
               : root.view === "hosts" ? "enter/l open host · 2 problems · f filter · o host in Checkmk · r refresh · s servers"
               : root.view === "host" ? "enter details, again opens Checkmk · f filter · h/backspace back · o open in Checkmk"
               : "enter details, again opens Checkmk · a " + (root.showAll ? "problems only" : "all services")

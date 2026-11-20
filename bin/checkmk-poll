@@ -184,6 +184,16 @@ if [[ "$(jq length <<<"$servers")" == 0 ]]; then
   exit 0
 fi
 
+# Disconnected servers are not polled and leave nothing behind: no services, no
+# counts, no notifications
+servers="$(jq -c 'map(select(.disconnected != true))' <<<"$servers")"
+if [[ "$(jq length <<<"$servers")" == 0 ]]; then
+  jq -n '{ok: true, reachable: false, disconnected: true, unconfigured: false, error: "", checked: now | floor,
+          servers: [], hosts: [], services: [], counts: {ok: 0, warn: 0, crit: 0, unknown: 0, unhandled: 0}, worst: 0}' |
+    write_status
+  exit 0
+fi
+
 # All servers at once, so a slow or unreachable one does not hold up the others
 while IFS= read -r server; do
   fetch "$server" &

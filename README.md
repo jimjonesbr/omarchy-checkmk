@@ -62,6 +62,7 @@ Left click opens the panel, middle click polls now, right click opens Checkmk.
 | `f`               | only CRIT, UNKNOWN, WARN or OK services, or all  |
 | `o`               | open in Checkmk                                  |
 | `s`               | servers                                          |
+| `d`               | in the server list: disconnect or connect        |
 | `i`               | about: version, author, license                  |
 | `r`               | poll now                                         |
 
@@ -71,6 +72,11 @@ are those of the host.
 
 Acknowledged problems and problems in downtime are shown dimmed and neither
 colour the icon nor notify.
+
+A server can be disconnected for a while, with *Disconnect* in its form or `d`
+in the server list: it is no longer polled and leaves the icon, the lists and
+the notifications, but keeps its settings and password. *Connect* brings it
+back.
 
 An expanded service shows when it was last checked and how often. Services that
 Checkmk considers stale (no fresh result for 1.5 check intervals) are marked

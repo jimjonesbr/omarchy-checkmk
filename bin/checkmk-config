@@ -9,6 +9,8 @@
 #   checkmk-config unlock <id>    check a secret read as JSON from stdin, {"secret": "..."},
 #                                 and keep it again, for a locked server
 #   checkmk-config lock [<id>]    forget the secret of one or all servers
+#   checkmk-config disconnect <id>  stop polling a server, keeping its settings and secret
+#   checkmk-config connect <id>   poll a disconnected server again
 #   checkmk-config secret <id>    print the secret of a server, for checkmk-poll
 #
 # test and save read one line of JSON from stdin:
@@ -17,7 +19,9 @@
 #    "proxy": "", "browser": ""}
 # An empty id adds a server, an empty secret keeps the stored one. Without
 # "remember", a new server does not remember its secret and an existing one keeps
-# its choice.
+# its choice. Saving keeps whether a server is
+# "disconnected"; only disconnect and connect change that, so that a
+# server can be disconnected without its secret at hand.
 #
 # The servers are kept in ~/.config/omarchy-checkmk/servers.json. A secret is kept
 # in one of two ways:
@@ -497,7 +501,7 @@ save() {
       + (if $until > 0 then {rememberedUntil: $until} else {} end)) as $new
     | if any(.[]; .id == $id)
       then map(if .id == $id
-        then (with_entries(select(.key | IN("timeout", "site", "sessionHours", "rememberDays"))) + $new)
+        then (with_entries(select(.key | IN("timeout", "site", "sessionHours", "rememberDays", "disconnected"))) + $new)
         else . end)
       else . + [$new] end
   ' | write_servers
@@ -530,6 +534,17 @@ delete() { # id
   [[ "$(jq -r '.remember' <<<"$existing")" != false ]] &&
     keyring_clear_unused "$(jq -r .url <<<"$existing")" "$(jq -r .user <<<"$existing")"
   result true "Removed $(jq -r .name <<<"$existing")"
+}
+
+# Disconnected servers are not polled; settings and secret stay as they are
+set_disconnected() { # id true|false
+  local existing
+  existing="$(server "$1")"
+  [[ -n "$existing" ]] || { result false "Unknown server $1"; return 1; }
+  servers | jq --arg id "$1" --argjson off "$2" '
+    map(if .id == $id then (if $off then .disconnected = true else del(.disconnected) end) else . end)
+  ' | write_servers
+  if [[ "$2" == true ]]; then result true "Disconnected"; else result true "Connected"; fi
 }
 
 unlock() { # id, secret as JSON on stdin
@@ -584,6 +599,8 @@ case "${1:-}" in
   delete) delete "${2:?server id}" ;;
   unlock) unlock "${2:?server id}" ;;
   lock) lock "${2:-}" ;;
+  disconnect) set_disconnected "${2:?server id}" true ;;
+  connect) set_disconnected "${2:?server id}" false ;;
   secret) s="$(server "${2:?server id}")"; [[ -n "$s" ]] && secret_of "$s" ;;
-  *) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '3,/^# The servers are kept/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 1 ;;
 esac
