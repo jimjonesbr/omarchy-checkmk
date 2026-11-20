@@ -90,8 +90,8 @@ fetch() { # server json
 
   local columns=(host_name description state plugin_output long_plugin_output
     last_state_change has_been_checked acknowledged scheduled_downtime_depth perf_data
-    last_check check_interval cached_at cache_interval staleness
-    host_state host_plugin_output host_last_state_change host_acknowledged host_scheduled_downtime_depth
+    last_check check_interval cached_at cache_interval staleness state_type last_hard_state
+    host_state host_state_type host_last_hard_state host_plugin_output host_last_state_change host_acknowledged host_scheduled_downtime_depth
     host_last_check host_check_interval host_staleness)
 
   local args=(-sS --max-time "$timeout" -G -w '\n%{http_code}' -H "Accept: application/json")
@@ -151,6 +151,10 @@ fetch() { # server json
           [ $rows[] | {
               server: $server, serverName: $serverName,
               host: .host_name, service: .description, state: .state, isHost: false,
+              # A soft state is one Checkmk is still re-checking before it counts:
+              # notifications go by the hard state, as Checkmk'"'"'s own do
+              soft: (.state_type == 0),
+              hardState: (if .state_type == 0 then (.last_hard_state // .state) else .state end),
               handled: (.acknowledged == 1 or .scheduled_downtime_depth > 0 or .host_state != 0),
               output: (.plugin_output | clean),
               details: (.long_plugin_output | gsub("\\\\n"; "\n") | clean),
@@ -163,6 +167,9 @@ fetch() { # server json
               host: .host_name, service: "Host",
               # DOWN counts as CRIT, UNREACHABLE as UNKNOWN
               state: (if .host_state == 1 then 2 else 3 end), isHost: true,
+              soft: (.host_state_type == 0),
+              hardState: ((if .host_state_type == 0 then (.host_last_hard_state // .host_state) else .host_state end)
+                | if . == 1 then 2 elif . == 2 then 3 else 0 end),
               handled: (.host_acknowledged == 1 or .host_scheduled_downtime_depth > 0),
               output: ((if .host_state == 1 then "Host is DOWN" else "Host is UNREACHABLE" end) + ": " + .host_plugin_output),
               details: "", metrics: [],
@@ -289,9 +296,17 @@ jq -c --slurpfile prev "$PREVIOUS" --argjson max "$MAX_NOTIFICATIONS" '
       | if .ok then {urgency: "low", title: "Checkmk: \(.name) reachable again", body: "", target: "servers"}
         else {urgency: "normal", title: "Checkmk: \(.name) unreachable", body: .error, target: "servers"} end
     ] as $servers
-  | ($prev.services // [] | map(select(.stale | not) | {key: key, value: .state}) | from_entries) as $before
+  # Hard states only: a soft state clears or is confirmed on the next checks.
+  # Status files from before hardState fall back to the state.
+  | ($prev.services // [] | map(select(.stale | not) | {key: key, value: (.hardState // .state)}) | from_entries) as $before
+  # The row of a down host only exists while it is down: a new one was UP before,
+  # as long as its server answered last time
+  | [ $prev.servers // [] | .[] | select(.ok) | .id ] as $answered
   | [ .services[] | select((.handled | not) and (.stale | not)) | . as $x | select($muted | index($x.server) | not)
-      | key as $k | select(($before | has($k)) and $before[$k] != .state) | . + {before: $before[$k]} ] as $changed
+      | . + {state: (.hardState // .state)}
+      | key as $k
+      | (if $before | has($k) then $before[$k] elif .isHost and ($answered | index($x.server)) then 0 else null end) as $was
+      | select($was != null and $was != .state) | . + {before: $was} ] as $changed
   | $servers + if ($changed | length) > $max then
       # Too many for one each: a summary
       [ {urgency: (if any($changed[]; .state == 2) then "critical" elif any($changed[]; .state != 0) then "normal" else "low" end),
@@ -344,8 +359,9 @@ read -r count crit warn unknown ok < <(jq -r --slurpfile prev "$PREVIOUS" '
   def count($state): map(select(.state == $state)) | length;
   $prev[0] as $prev
   | [ .servers[] | select(.muted) | .id ] as $muted
-  | ($prev.services // [] | map(select(.stale | not) | {key: key, value: .state}) | from_entries) as $before
+  | ($prev.services // [] | map(select(.stale | not) | {key: key, value: (.hardState // .state)}) | from_entries) as $before
   | [ .services[] | select((.handled | not) and (.stale | not)) | . as $x | select($muted | index($x.server) | not)
+      | . + {state: (.hardState // .state)}
       | key as $k | select(($before | has($k)) and $before[$k] != .state) ]
   | "\(length) \(count(2)) \(count(1)) \(count(3)) \(count(0))"
 ' "$STATUS")

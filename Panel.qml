@@ -1408,6 +1408,7 @@ Panel {
                         text: Model.age(root.now - row.modelData.since)
                           + (row.modelData.handled ? " · handled" : "")
                           + (row.modelData.stale ? " · stale" : "")
+                          + (row.modelData.soft && row.modelData.state !== 0 ? " · soft" : "")
                           + (row.modelData.overdue && !row.modelData.stale ? " · overdue" : "")
                         color: root.dim
                         font.family: root.fontFamily

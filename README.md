@@ -6,8 +6,10 @@ A bar widget for the Omarchy shell that keeps an eye on one or more Checkmk serv
   orange for UNKNOWN, red for CRIT. An unhandled CRIT also makes it pulse.
 - A popup lists hosts and problems, with service details, metrics and history graphs.
 - A desktop notification tells when a service changes state, with the host and
-  the check output; clicking it opens that service in the panel. More than five
-  changes at once come as one summary.
+  the check output; clicking it opens that service in the panel. Like Checkmk's
+  own notifications, it waits until Checkmk has confirmed the state (a hard
+  state), so a single failed check that clears on the next one stays quiet. More
+  than five changes at once come as one summary.
 
 Requires Checkmk 2.2 or newer, plus `curl`, `jq` and `python-gobject` (all part
 of Omarchy), and `keyutils` or `secret-tool` to keep the secret. Without
@@ -86,6 +88,8 @@ kept in memory only is forgotten. *Connect* brings the server back and asks for
 a forgotten password first. While no server is connected, the icon is grey.
 *Mute notifications* in the form keeps a server polled and shown, but silences
 its notifications.
+
+A service whose state Checkmk is still re-checking is marked *soft*.
 
 An expanded service shows when it was last checked and how often. Services that
 Checkmk considers stale (no fresh result for 1.5 check intervals) are marked
