@@ -379,8 +379,7 @@ Panel {
     rememberToggle.checked = !!s && s.remember !== false
     muteToggle.checked = !!s && s.muted === true
     proxyField.text = s ? (s.proxy || "") : ""
-    browserField.text = s ? (s.browser || "") : ""
-    advancedOpen = proxyField.text !== "" || browserField.text !== ""
+    advancedOpen = proxyField.text !== ""
     setView("edit")
     Qt.callLater(function() { (id ? nameField : urlField).forceActiveFocus() })
   }
@@ -397,8 +396,7 @@ Panel {
       insecure: insecureToggle.checked,
       remember: rememberToggle.checked,
       muted: muteToggle.checked,
-      proxy: proxyField.text.trim(),
-      browser: browserField.text.trim()
+      proxy: proxyField.text.trim()
     })
   }
 
@@ -1882,18 +1880,6 @@ Panel {
                 id: proxyField
                 width: parent.width
                 placeholderText: "e.g. localhost:1080 for ssh -D 1080 jumphost"
-                foreground: root.fg
-                font.family: root.fontFamily
-                KeyNavigation.tab: browserField
-                Keys.onEscapePressed: root.back()
-                onAccepted: root.runSetup("test")
-              }
-
-              FieldLabel { label: "Browser"; hint: "opens this server's links, empty for the default" }
-              TextField {
-                id: browserField
-                width: parent.width
-                placeholderText: "e.g. chromium --proxy-server=socks5://localhost:1080"
                 foreground: root.fg
                 font.family: root.fontFamily
                 KeyNavigation.tab: nameField

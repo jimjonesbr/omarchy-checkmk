@@ -105,10 +105,9 @@ A server on a private network can be reached through a tunnel. Open it, e.g.
 with `ssh -D 1080 jumphost`, and under *Advanced* in the server form set
 *Proxy* to `localhost:1080`. A bare `host:port` is a SOCKS5 proxy that also looks
 up host names through the tunnel (`socks5h://`); use `http://host:port` for an
-HTTP proxy. *Browser* sets the command that opens this server's links in
-Checkmk, e.g. `chromium --proxy-server=socks5://localhost:1080`. Without it,
-links go to the default browser. The widget does not open the tunnel itself; while it is down,
-the server shows a connection error.
+HTTP proxy. The widget does not open the tunnel itself; while it is down, the
+server shows a connection error. Links to Checkmk open in the default browser,
+which needs its own way through the tunnel, e.g. a proxy or PAC setting.
 
 By default the password is never saved: the widget asks for it after each login
 and keeps it in kernel memory only, for 8 hours (`sessionHours`). With *Remember

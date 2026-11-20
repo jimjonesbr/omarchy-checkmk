@@ -1,13 +1,8 @@
 #!/bin/bash
 #
-# Open a Checkmk link in the browser of the server it belongs to.
+# Open a Checkmk link in the default browser.
 #
 #   echo <url> | checkmk-open
-#
-# A server with a "browser" in servers.json, e.g.
-#   "browser": "chromium --proxy-server=socks5://127.0.0.1:1080"
-# has its links opened with that command. Links of other servers go to the
-# default browser through xdg-open.
 #
 # Links name hosts and services, so neither this script nor the browser gets
 # them on the command line, where every local user could read them in /proc.
@@ -20,17 +15,8 @@ umask 077
 IFS= read -r url || true
 [[ "$url" =~ ^https?:// ]] || { echo "usage: echo <http(s) url> | checkmk-open" >&2; exit 2; }
 
-DIR="${CHECKMK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-checkmk}"
 # The runtime directory is in memory and for this user only
 PAGES="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/omarchy-checkmk"
-
-# The server whose site URL is the longest start of the link
-browser="$(CMK_LINK="$url" jq -r '
-  $ENV.CMK_LINK as $u
-  | [.servers[]? | . as $s | select(($s.browser // "") != "" and ($u == $s.url or ($u | startswith($s.url + "/"))))]
-  | max_by(.url | length) | .browser // ""
-' "$DIR/servers.json" 2>/dev/null)"
-
 mkdir -p "$PAGES" && chmod 700 "$PAGES"
 # Pages of earlier links are no longer needed
 find "$PAGES" -maxdepth 1 -name 'open-*.html' -mmin +1 -delete 2>/dev/null
@@ -52,9 +38,4 @@ EOF
 # Gone once the browser has read it
 setsid -f sh -c 'sleep 60; rm -f "$1"' sh "$page" >/dev/null 2>&1
 
-if [[ -n "$browser" ]]; then
-  read -ra cmd <<<"$browser"
-  setsid -f "${cmd[@]}" "file://$page" >/dev/null 2>&1
-else
-  setsid -f xdg-open "$page" >/dev/null 2>&1
-fi
+setsid -f xdg-open "$page" >/dev/null 2>&1

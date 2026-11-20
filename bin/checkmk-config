@@ -16,7 +16,7 @@
 # test and save read one line of JSON from stdin:
 #   {"id": "", "name": "Production", "url": "...", "user": "...", "secret": "...",
 #    "serviceFilter": "", "hostFilter": "", "insecure": false, "remember": false,
-#    "proxy": "", "browser": "", "muted": false}
+#    "proxy": "", "muted": false}
 # An empty id adds a server, an empty secret keeps the stored one. Without
 # "remember", a new server does not remember its secret and an existing one keeps
 # its choice. A "muted" server sends no notifications. Saving keeps whether a
@@ -46,9 +46,7 @@
 #
 # A server on a network that is only reachable through a tunnel names a "proxy"
 # for curl, e.g. "socks5h://127.0.0.1:1080" for `ssh -D 1080 jumphost`; a bare
-# host:port means SOCKS5 with the host names resolved through the tunnel. Its
-# "browser", e.g. "chromium --proxy-server=socks5://127.0.0.1:1080", opens its
-# links in Checkmk (see checkmk-open).
+# host:port means SOCKS5 with the host names resolved through the tunnel.
 
 set -uo pipefail
 # servers.json and secret files are for this user only
@@ -374,7 +372,6 @@ read_input() {
   IN_HOST_FILTER="$(jq -r '.hostFilter // ""' <<<"$line")"
   IN_INSECURE="$(jq -r 'if .insecure then true else false end' <<<"$line")"
   IN_PROXY="$(normalize_proxy "$(jq -r '.proxy // ""' <<<"$line")")"
-  IN_BROWSER="$(jq -r '.browser // ""' <<<"$line" | sed 's/^ *//; s/ *$//')"
   IN_MUTED="$(jq -r 'if .muted then true else false end' <<<"$line")"
 
   EXISTING=""
@@ -490,14 +487,13 @@ save() {
   [[ "$IN_REMEMBER" == true && -z "$secret_file" ]] && until=$(($(date +%s) + days * 86400))
 
   servers | J_NAME="$name" J_URL="$IN_URL" J_USER="$IN_USER" J_SF="$IN_SERVICE_FILTER" \
-    J_HF="$IN_HOST_FILTER" J_FILE="$secret_file" J_PROXY="$IN_PROXY" J_BROWSER="$IN_BROWSER" \
+    J_HF="$IN_HOST_FILTER" J_FILE="$secret_file" J_PROXY="$IN_PROXY" \
     jq --arg id "$id" --argjson insecure "$IN_INSECURE" --argjson remember "$IN_REMEMBER" --argjson until "$until" \
     --argjson muted "$IN_MUTED" '
     $ENV.J_NAME as $name | $ENV.J_URL as $url | $ENV.J_USER as $user | $ENV.J_SF as $sf
-    | $ENV.J_HF as $hf | $ENV.J_FILE as $file | $ENV.J_PROXY as $proxy | $ENV.J_BROWSER as $browser
+    | $ENV.J_HF as $hf | $ENV.J_FILE as $file | $ENV.J_PROXY as $proxy
     | ({id: $id, name: $name, url: $url, user: $user, serviceFilter: $sf, hostFilter: $hf, insecure: $insecure}
       + (if $proxy != "" then {proxy: $proxy} else {} end)
-      + (if $browser != "" then {browser: $browser} else {} end)
       + (if $file != "" then {secretFile: $file} else {} end)
       + {remember: $remember}
       + (if $muted then {muted: true} else {} end)
