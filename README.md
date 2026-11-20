@@ -5,7 +5,10 @@ A bar widget for the Omarchy shell that keeps an eye on one or more Checkmk serv
 - The bar icon takes the colour of the worst unhandled problem: amber for WARN,
   orange for UNKNOWN, red for CRIT. An unhandled CRIT also makes it pulse.
 - A popup lists hosts and problems, with service details, metrics and history graphs.
-- A desktop notification is sent whenever a service changes state.
+- A desktop notification tells when services change state, e.g. "2 services
+  changed state, now 1 CRIT, 1 OK". Clicking it opens the panel with the details.
+  Notifications name no hosts or services: their text is passed on command lines,
+  which every local user can read.
 
 Requires Checkmk 2.2 or newer, plus `curl` and `jq`, and `keyutils` or
 `secret-tool` to keep the secret.
@@ -96,9 +99,8 @@ with `ssh -D 1080 jumphost`, and under *Advanced* in the server form set
 *Proxy* to `localhost:1080`. A bare `host:port` is a SOCKS5 proxy that also looks
 up host names through the tunnel (`socks5h://`); use `http://host:port` for an
 HTTP proxy. *Browser* sets the command that opens this server's links in
-Checkmk, from the panel and from notifications, e.g.
-`chromium --proxy-server=socks5://localhost:1080`. Without it, links go to the
-default browser. The widget does not open the tunnel itself; while it is down,
+Checkmk, e.g. `chromium --proxy-server=socks5://localhost:1080`. Without it,
+links go to the default browser. The widget does not open the tunnel itself; while it is down,
 the server shows a connection error.
 
 By default the password is never saved: the widget asks for it after each login

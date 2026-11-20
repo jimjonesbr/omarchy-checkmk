@@ -32,6 +32,11 @@
 #   The secret is deleted after "rememberDays" (default 30, "rememberedUntil" holds
 #   the date) and the server is locked until it is entered again.
 #
+# Settings and secrets never go on a command line, where every local user could
+# read them in /proc: jq gets them through the environment or stdin, curl through
+# its config stream. The exception is secret-tool, which takes the URL and user
+# that a remembered secret is filed under only as arguments.
+#
 # A server may also name a "secretFile" of its own, e.g. for the test instance;
 # that file is never expired or deleted.
 #
@@ -107,7 +112,8 @@ keyring_store() { # url user secret
 # Keyring entries are keyed by url and user, so two servers entries may share one
 keyring_clear_unused() { # url user
   local users
-  users="$(servers | jq --arg u "$1" --arg n "$2" '[.[] | select(.url == $u and .user == $n and .remember != false)] | length')"
+  users="$(servers | CMK_U="$1" CMK_N="$2" jq '$ENV.CMK_U as $u | $ENV.CMK_N as $n
+    | [.[] | select(.url == $u and .user == $n and .remember != false)] | length')"
   ((users == 0)) && keyring_available && secret-tool clear application omarchy-checkmk url "$1" user "$2" 2>/dev/null
   return 0
 }
@@ -237,11 +243,13 @@ migrate_legacy() {
 
   local id
   id="$(new_id "$(name_from_url "$CMK_URL")")"
-  jq -n --arg id "$id" --arg name "$(name_from_url "$CMK_URL")" --arg url "$CMK_URL" --arg user "$CMK_USER" \
-    --arg sf "$CMK_SERVICE_FILTER" --arg hf "$CMK_HOST_FILTER" --arg file "$CMK_SECRET_FILE" \
-    --argjson insecure "$([[ "$CMK_INSECURE" == 1 ]] && echo true || echo false)" \
+  J_NAME="$(name_from_url "$CMK_URL")" J_URL="$CMK_URL" J_USER="$CMK_USER" \
+    J_SF="$CMK_SERVICE_FILTER" J_HF="$CMK_HOST_FILTER" J_FILE="$CMK_SECRET_FILE" \
+    jq -n --arg id "$id" --argjson insecure "$([[ "$CMK_INSECURE" == 1 ]] && echo true || echo false)" \
     --arg timeout "$CMK_TIMEOUT" '
-    [{id: $id, name: $name, url: $url, user: $user, serviceFilter: $sf, hostFilter: $hf, insecure: $insecure}
+    $ENV.J_NAME as $name | $ENV.J_URL as $url | $ENV.J_USER as $user
+    | $ENV.J_SF as $sf | $ENV.J_HF as $hf | $ENV.J_FILE as $file
+    | [{id: $id, name: $name, url: $url, user: $user, serviceFilter: $sf, hostFilter: $hf, insecure: $insecure}
       + (if $file != "" then {secretFile: $file} else {} end)
       + (if $timeout != "" then {timeout: ($timeout | tonumber)} else {} end)]
   ' | write_servers
@@ -261,8 +269,9 @@ list() {
     local id expires=""
     id="$(jq -r .id <<<"$s")"
     [[ "$(jq -r '.remember' <<<"$s")" == false ]] && expires="$(session_expires "$id")"
-    out="$(jq -c --argjson s "$s" --arg store "$(secret_store_of "$s")" --arg expires "$expires" --argjson now "$(date +%s)" '
-      . + [$s + {secretStore: $store}
+    out="$(J_S="$s" jq -c --arg store "$(secret_store_of "$s")" --arg expires "$expires" --argjson now "$(date +%s)" '
+      ($ENV.J_S | fromjson) as $s
+      | . + [$s + {secretStore: $store}
             + if $store == "session" then {unlocked: ($expires != ""), expires: $expires}
               elif ($s.rememberedUntil // 0) > 0 and ($s.secretFile // "") == "" then
                 {unlocked: true, expires: ((($s.rememberedUntil - $now) / 86400 | ceil | tostring) + "d")}
@@ -286,17 +295,26 @@ valid_proxy() { # proxy
   [[ -z "$1" || "$1" =~ ^(socks5h|socks5|socks4a|socks4|http|https)://[^[:space:]/]+/?$ ]]
 }
 
-# curl options for IN_INSECURE and IN_PROXY, in the array named by $1
-connection_args() { # array name
-  local -n out="$1"
-  [[ "$IN_INSECURE" == true ]] && out+=(-k)
-  [[ -n "$IN_PROXY" ]] && out+=(--proxy "$IN_PROXY")
+# One line of a curl config: the value quoted, with \ and " escaped
+curl_option() { # name value
+  local v="${2//\\/\\\\}"
+  printf '%s = "%s"\n' "$1" "${v//\"/\\\"}"
+}
+
+# curl config for a request to IN_URL with IN_INSECURE and IN_PROXY. It goes to
+# curl with -K through a file descriptor: on the command line every local user
+# could read the site URL in /proc.
+connection_config() { # path below the site URL
+  curl_option url "$IN_URL$1"
+  [[ "$IN_INSECURE" == true ]] && echo insecure
+  [[ -n "$IN_PROXY" ]] && curl_option proxy "$IN_PROXY"
   return 0
 }
 
 result() { # ok message [extra json]
   local extra="${3:-}"
-  jq -nc --argjson ok "$1" --arg message "$2" --argjson extra "${extra:-null}" '{ok: $ok, message: $message} + ($extra // {})'
+  J_MESSAGE="$2" J_EXTRA="${extra:-null}" jq -nc --argjson ok "$1" \
+    '{ok: $ok, message: $ENV.J_MESSAGE} + ($ENV.J_EXTRA | fromjson // {})'
 }
 
 read_input() {
@@ -316,13 +334,14 @@ read_input() {
 
   EXISTING=""
   [[ -n "$IN_ID" ]] && EXISTING="$(server "$IN_ID")"
-  IN_REMEMBER="$(jq -r --argjson e "${EXISTING:-null}" '
-    if .remember != null then .remember == true
+  IN_REMEMBER="$(J_E="${EXISTING:-null}" jq -r '
+    ($ENV.J_E | fromjson) as $e
+    | if .remember != null then .remember == true
     elif $e != null then $e.remember != false
     else false end' <<<"$line")"
   # An empty secret keeps the stored one, as long as url and user are unchanged
   if [[ -z "$IN_SECRET" && -n "$EXISTING" ]]; then
-    IN_SECRET="$(secret_of "$(jq -c --arg u "$IN_URL" --arg n "$IN_USER" '. + {url: $u, user: $n}' <<<"$EXISTING")")"
+    IN_SECRET="$(secret_of "$(J_U="$IN_URL" J_N="$IN_USER" jq -c '. + {url: $ENV.J_U, user: $ENV.J_N}' <<<"$EXISTING")")"
     [[ -z "$IN_SECRET" ]] && IN_SECRET="$(secret_of "$EXISTING")"
   fi
 }
@@ -339,9 +358,8 @@ warnings() {
   fi
   # Only accounts with access to the Checkmk configuration may list pending changes
   local args=(-s -o /dev/null --max-time 10 -w '%{http_code}' -H "Accept: application/json")
-  connection_args args
-  if [[ "$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s %s\n' "$IN_USER" "$IN_SECRET") \
-    "$IN_URL/check_mk/api/1.0/domain-types/activation_run/collections/pending_changes")" == 200 ]]; then
+  if [[ "$(curl "${args[@]}" -K <(connection_config /check_mk/api/1.0/domain-types/activation_run/collections/pending_changes) \
+    -H @<(printf 'Authorization: Bearer %s %s\n' "$IN_USER" "$IN_SECRET"))" == 200 ]]; then
     list+=("This account can change the Checkmk configuration. The widget only reads; a user with the role Guest user is enough and safer to keep on a laptop.")
   fi
   printf '%s\n' "${list[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))'
@@ -361,12 +379,11 @@ check_connection() {
   [[ -n "$IN_SECRET" ]] || { result false "The password or secret is missing"; return 1; }
 
   local args=(-sS --max-time 10 -w '\n%{http_code}' -H "Accept: application/json")
-  connection_args args
 
   local response code body version
   # The secret goes to curl through a file descriptor, never on its command line
-  if ! response="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s %s\n' "$IN_USER" "$IN_SECRET") \
-    "$IN_URL/check_mk/api/1.0/version" 2>&1)"; then
+  if ! response="$(curl "${args[@]}" -K <(connection_config /check_mk/api/1.0/version) \
+    -H @<(printf 'Authorization: Bearer %s %s\n' "$IN_USER" "$IN_SECRET") 2>&1)"; then
     result false "$(head -1 <<<"$response" | sed 's/^curl: ([0-9]*) //')"
     return 1
   fi
@@ -427,11 +444,12 @@ save() {
   [[ -n "$EXISTING" ]] && days="$(remember_days "$EXISTING")"
   [[ "$IN_REMEMBER" == true && -z "$secret_file" ]] && until=$(($(date +%s) + days * 86400))
 
-  servers | jq --arg id "$id" --arg name "$name" --arg url "$IN_URL" --arg user "$IN_USER" \
-    --arg sf "$IN_SERVICE_FILTER" --arg hf "$IN_HOST_FILTER" --argjson insecure "$IN_INSECURE" \
-    --arg file "$secret_file" --argjson remember "$IN_REMEMBER" --argjson until "$until" \
-    --arg proxy "$IN_PROXY" --arg browser "$IN_BROWSER" '
-    ({id: $id, name: $name, url: $url, user: $user, serviceFilter: $sf, hostFilter: $hf, insecure: $insecure}
+  servers | J_NAME="$name" J_URL="$IN_URL" J_USER="$IN_USER" J_SF="$IN_SERVICE_FILTER" \
+    J_HF="$IN_HOST_FILTER" J_FILE="$secret_file" J_PROXY="$IN_PROXY" J_BROWSER="$IN_BROWSER" \
+    jq --arg id "$id" --argjson insecure "$IN_INSECURE" --argjson remember "$IN_REMEMBER" --argjson until "$until" '
+    $ENV.J_NAME as $name | $ENV.J_URL as $url | $ENV.J_USER as $user | $ENV.J_SF as $sf
+    | $ENV.J_HF as $hf | $ENV.J_FILE as $file | $ENV.J_PROXY as $proxy | $ENV.J_BROWSER as $browser
+    | ({id: $id, name: $name, url: $url, user: $user, serviceFilter: $sf, hostFilter: $hf, insecure: $insecure}
       + (if $proxy != "" then {proxy: $proxy} else {} end)
       + (if $browser != "" then {browser: $browser} else {} end)
       + (if $file != "" then {secretFile: $file} else {} end)
@@ -445,8 +463,11 @@ save() {
   ' | write_servers
 
   # A secret no longer needed in the desktop keyring is removed from it
-  [[ -n "$old_url" ]] && keyring_clear_unused "$old_url" "$old_user"
-  [[ "$IN_REMEMBER" == false ]] && keyring_clear_unused "$IN_URL" "$IN_USER"
+  # Only a server that remembered its secret can have left one there
+  if [[ -n "$EXISTING" && "$(jq -r '.remember' <<<"$EXISTING")" != false ]]; then
+    keyring_clear_unused "$old_url" "$old_user"
+    [[ "$IN_REMEMBER" == false ]] && keyring_clear_unused "$IN_URL" "$IN_USER"
+  fi
 
   local where
   case "$store" in
@@ -466,7 +487,8 @@ delete() { # id
   servers | jq --arg id "$1" 'map(select(.id != $id))' | write_servers
   rm -f "$SECRETS/$1"
   session_clear "$1"
-  keyring_clear_unused "$(jq -r .url <<<"$existing")" "$(jq -r .user <<<"$existing")"
+  [[ "$(jq -r '.remember' <<<"$existing")" != false ]] &&
+    keyring_clear_unused "$(jq -r .url <<<"$existing")" "$(jq -r .user <<<"$existing")"
   result true "Removed $(jq -r .name <<<"$existing")"
 }
 

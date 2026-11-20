@@ -273,8 +273,9 @@ Panel {
     for (var i = 0; i < graphRanges.length; i++) if (graphRanges[i].id === range) seconds = graphRanges[i].seconds
     graph = { key: key, range: range, loading: true, error: "", data: null }
     graphProc.running = false
-    graphProc.command = [hostWidget.graphTool, row.server, row.host, row.service, String(seconds)]
-      .concat(row.metrics.map(function(m) { return m.name }))
+    graphProc.command = [hostWidget.graphTool]
+    graphProc.input = JSON.stringify({ server: row.server, host: row.host, service: row.service,
+      seconds: seconds, metrics: row.metrics.map(function(m) { return m.name }) })
     graphProc.running = true
   }
 
@@ -308,6 +309,14 @@ Panel {
 
   Process {
     id: graphProc
+    // Host and service names go over stdin: on the command line every local
+    // user could read them
+    property string input: ""
+    stdinEnabled: true
+    onStarted: {
+      write(input + "\n")
+      input = ""
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {

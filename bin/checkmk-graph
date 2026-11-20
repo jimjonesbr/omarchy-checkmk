@@ -2,11 +2,19 @@
 #
 # Fetch the history of the metrics of one service from Checkmk.
 #
-#   checkmk-graph <server-id> <host> <service> <seconds> <metric>...
+#   checkmk-graph < request
+#
+# reads one line of JSON from stdin:
+#   {"server": "<server-id>", "host": "...", "service": "...", "seconds": 14400,
+#    "metrics": ["load1", ...]}
 #
 # Prints JSON: {ok, error, start, end, step, curves: [{metric, title, color, points}]}
 # with start and end in epoch seconds and one point every step seconds, null for gaps.
 # The metrics are fetched in parallel, one request each.
+#
+# Host, service and metric names, the site URL and the answers never go on a
+# command line, where every local user could read them in /proc: they travel
+# through stdin, files in a private directory and curl's config stream.
 
 set -uo pipefail
 umask 077
@@ -14,73 +22,81 @@ umask 077
 BIN="$(dirname "$(realpath "$0")")"
 
 fail() {
-  jq -nc --arg error "$1" '{ok: false, error: $error, curves: []}'
+  CMK_ERROR="$1" jq -nc '{ok: false, error: $ENV.CMK_ERROR, curves: []}'
   exit 1
 }
 
-(($# >= 5)) || fail "usage: checkmk-graph <server-id> <host> <service> <seconds> <metric>..."
-id="$1" host="$2" service="$3" seconds="$4"
-shift 4
-
-server="$("$BIN/checkmk-config" list | jq -c --arg id "$id" '.[] | select(.id == $id)')"
-[[ -n "$server" ]] || fail "Unknown server $id"
-url="$(jq -r .url <<<"$server")"
-user="$(jq -r .user <<<"$server")"
-# The site id is usually the last part of the site URL, e.g. https://host/prod
-site="$(jq -r --arg u "$url" '.site // ($u | sub("/+$"; "") | split("/") | last)' <<<"$server")"
-secret="$("$BIN/checkmk-config" secret "$id")"
-[[ -n "$secret" ]] || fail "No password or secret stored for $user"
-
-end="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-start="$(date -u -d "-$seconds seconds" +%Y-%m-%dT%H:%M:%SZ)"
-
-args=(-sS --max-time 20 -w '\n%{http_code}' -H "Accept: application/json" -H "Content-Type: application/json")
-[[ "$(jq -r '.insecure // false' <<<"$server")" == true ]] && args+=(-k)
-[[ -n "$(jq -r '.proxy // ""' <<<"$server")" ]] && args+=(--proxy "$(jq -r .proxy <<<"$server")")
+# One line of a curl config: the value quoted, with \ and " escaped
+curl_option() { # name value
+  local v="${2//\\/\\\\}"
+  printf '%s = "%s"\n' "$1" "${v//\"/\\\"}"
+}
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-i=0
-for metric in "$@"; do
-  body="$(jq -nc --arg site "$site" --arg host "$host" --arg service "$service" --arg metric "$metric" \
-    --arg start "$start" --arg end "$end" '{
-      site: $site, host_name: $host, service_description: $service,
-      type: "single_metric", metric_id: $metric,
-      time_range: {start: $start, end: $end},
-      reduce: "max"
-    }')"
+IFS= read -r line || true
+jq -e '(.server | type == "string") and (.seconds | type == "number") and (.metrics | length > 0)' \
+  >/dev/null 2>&1 <<<"$line" || fail "Invalid request"
+printf '%s\n' "$line" > "$work/request.json"
+id="$(jq -r .server "$work/request.json")"
+
+"$BIN/checkmk-config" list | jq -c --arg id "$id" '.[] | select(.id == $id)' > "$work/server.json"
+[[ -s "$work/server.json" ]] || fail "Unknown server $id"
+url="$(jq -r .url "$work/server.json")"
+user="$(jq -r .user "$work/server.json")"
+secret="$("$BIN/checkmk-config" secret "$id")"
+[[ -n "$secret" ]] || fail "No password or secret stored for this server"
+
+seconds="$(jq -r '.seconds | floor' "$work/request.json")"
+end="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+start="$(date -u -d "-$seconds seconds" +%Y-%m-%dT%H:%M:%SZ)"
+
+args=(-sS --max-time 20 -w '%{http_code}' -H "Accept: application/json" -H "Content-Type: application/json")
+[[ "$(jq -r '.insecure // false' "$work/server.json")" == true ]] && args+=(-k)
+config="$(curl_option url "$url/check_mk/api/1.0/domain-types/metric/actions/get/invoke")"
+proxy="$(jq -r '.proxy // ""' "$work/server.json")"
+[[ -n "$proxy" ]] && config+=$'\n'"$(curl_option proxy "$proxy")"
+
+count="$(jq '.metrics | length' "$work/request.json")"
+for ((i = 0; i < count; i++)); do
+  # The site id is usually the last part of the site URL, e.g. https://host/prod
+  jq -c --slurpfile server "$work/server.json" --argjson i "$i" --arg start "$start" --arg end "$end" '
+    $server[0] as $s
+    | {site: ($s.site // ($s.url | sub("/+$"; "") | split("/") | last)),
+       host_name: .host, service_description: .service,
+       type: "single_metric", metric_id: .metrics[$i],
+       time_range: {start: $start, end: $end},
+       reduce: "max"}
+  ' "$work/request.json" > "$work/body$i"
   # The secret goes to curl through a file descriptor, never on its command line
-  curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s %s\n' "$user" "$secret") \
-    -X POST -d "$body" "$url/check_mk/api/1.0/domain-types/metric/actions/get/invoke" \
-    > "$work/$i" 2>&1 &
-  i=$((i + 1))
+  curl "${args[@]}" -K <(printf '%s\n' "$config") \
+    -H @<(printf 'Authorization: Bearer %s %s\n' "$user" "$secret") \
+    -X POST --data-binary @"$work/body$i" -o "$work/answer$i" \
+    > "$work/code$i" 2> "$work/error$i" &
 done
 wait
 
-i=0
-results="[]"
-for metric in "$@"; do
-  response="$(cat "$work/$i")"
-  code="${response##*$'\n'}"
-  answer="${response%$'\n'*}"
-  if [[ "$code" != 200 ]]; then
-    # One metric without history (e.g. never stored) must not hide the others
-    error="$(jq -r '.title // .detail // empty' <<<"$answer" 2>/dev/null)"
-    results="$(jq -c --arg m "$metric" --arg e "${error:-HTTP $code}" '. + [{metric: $m, error: $e, points: []}]' <<<"$results")"
-  else
-    results="$(jq -c --arg m "$metric" --argjson a "$answer" '
-      . + [{metric: $m, title: ($a.metrics[0].title // $m), color: ($a.metrics[0].color // ""),
-            start: ($a.time_range.start | sub("\\+00:00$"; "Z") | fromdateiso8601),
-            end: ($a.time_range.end | sub("\\+00:00$"; "Z") | fromdateiso8601),
-            step: $a.step, points: ($a.metrics[0].data_points // [])}]
-    ' <<<"$results")"
-  fi
-  i=$((i + 1))
-done
-
-jq -c '
+# One metric without history (e.g. never stored) must not hide the others
+for ((i = 0; i < count; i++)); do
+  code="$(cat "$work/code$i" 2>/dev/null)"
+  jq -e . "$work/answer$i" > "$work/answer$i.json" 2>/dev/null || echo 'null' > "$work/answer$i.json"
+  CMK_CODE="$code" CMK_CURL_ERROR="$(head -1 "$work/error$i" 2>/dev/null | sed 's/^curl: ([0-9]*) //')" \
+    jq -c --argjson i "$i" --slurpfile answer "$work/answer$i.json" '
+      .metrics[$i] as $m | $answer[0] as $a
+      | if $ENV.CMK_CODE == "200" and $a != null then
+          {metric: $m, title: ($a.metrics[0].title // $m), color: ($a.metrics[0].color // ""),
+           start: ($a.time_range.start | sub("\\+00:00$"; "Z") | fromdateiso8601),
+           end: ($a.time_range.end | sub("\\+00:00$"; "Z") | fromdateiso8601),
+           step: $a.step, points: ($a.metrics[0].data_points // [])}
+        else
+          {metric: $m, points: [],
+           error: (($a | objects | .title // .detail) // (if $ENV.CMK_CURL_ERROR != "" then $ENV.CMK_CURL_ERROR
+                   else "HTTP " + $ENV.CMK_CODE end))}
+        end
+    ' "$work/request.json"
+done | jq -sc '
   (map(select(.error | not)) | .[0]) as $first
   | if $first == null then {ok: false, error: (.[0].error // "No data"), curves: .}
     else {ok: true, error: "", start: $first.start, end: $first.end, step: $first.step, curves: .} end
-' <<<"$results"
+'

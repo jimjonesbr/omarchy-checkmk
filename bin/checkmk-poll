@@ -1,14 +1,19 @@
 #!/bin/bash
 #
 # Fetch service states from every configured Checkmk server, write them to a
-# status file and send a desktop notification for every service that changed
-# state since the previous run.
+# status file and send a desktop notification when services changed state since
+# the previous run.
 #
 #   checkmk-poll              poll once
 #   checkmk-poll --quiet      poll once without notifications
 #
 # Servers: see checkmk-config
 # Output:  ${XDG_CACHE_HOME:-~/.cache}/omarchy-checkmk/status.json
+#
+# Nothing from Checkmk, nor the site URL or filters, goes on a command line, where
+# every local user could read it in /proc: curl takes them from its config
+# stream, jq from files and the environment. For the same reason notifications
+# only count, e.g. "2 services are now CRIT", and clicking one opens the panel.
 
 set -uo pipefail
 # The status file and temporary files are for this user only
@@ -18,9 +23,6 @@ BIN="$(dirname "$(realpath "$0")")"
 STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-checkmk"
 STATUS="$STATE_DIR/status.json"
 
-# More changes than this in a single poll are announced as one summary
-MAX_NOTIFICATIONS=5
-
 notify=1
 [[ "${1:-}" == "--quiet" ]] && notify=0
 
@@ -28,22 +30,20 @@ mkdir -p "$STATE_DIR"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-send_notification() { # urgency headline description [url]
+# Only fixed texts and counts: whatever is passed here is on a command line
+send_notification() { # urgency headline description panel-view
   ((notify)) || return 0
-  local exec_args=() body="$3"
-  # The body is rendered with markup and links; plugin output comes from the
-  # monitored hosts and must not be able to inject either
-  # (quoted, since bash 5.2 reads a bare & in the replacement as the match)
-  body="${body//&/'&amp;'}"
-  body="${body//</'&lt;'}"
-  body="${body//>/'&gt;'}"
-  [[ -n "${4:-}" ]] && exec_args=(--exec "$BIN/checkmk-open" "$4")
-
   if command -v omarchy-notification-send >/dev/null; then
-    omarchy-notification-send --app-name Checkmk -g "󰗶" -u "$1" "$2" "$body" "${exec_args[@]}"
+    omarchy-notification-send --app-name Checkmk -g "󰗶" -u "$1" "$2" "$3" --exec omarchy-shell checkmk show "$4"
   else
-    notify-send -a Checkmk -u "$1" "$2" "$body"
+    notify-send -a Checkmk -u "$1" "$2" "$3"
   fi
+}
+
+# One line of a curl config: the value quoted, with \ and " escaped
+curl_option() { # name value
+  local v="${2//\\/\\\\}"
+  printf '%s = "%s"\n' "$1" "${v//\"/\\\"}"
 }
 
 # Writes $WORK/<id>.json: {ok, error, services} with the normalised services of that server
@@ -57,7 +57,7 @@ fetch() { # server json
   local out="$WORK/$id.json"
 
   failed() { # error [locked]
-    jq -nc --arg error "$1" --argjson locked "${2:-false}" '{ok: false, locked: $locked, error: $error, services: []}' > "$out"
+    CMK_ERROR="$1" jq -nc --argjson locked "${2:-false}" '{ok: false, locked: $locked, error: $ENV.CMK_ERROR, services: []}' > "$out"
   }
 
   secret="$("$BIN/checkmk-config" secret "$id")"
@@ -88,15 +88,18 @@ fetch() { # server json
     host_last_check host_check_interval host_staleness)
 
   local args=(-sS --max-time "$timeout" -G -w '\n%{http_code}' -H "Accept: application/json")
-  for c in "${columns[@]}"; do args+=(--data-urlencode "columns=$c"); done
-  [[ -n "$query" ]] && args+=(--data-urlencode "query=$query")
   [[ "$(jq -r '.insecure // false' <<<"$server")" == true ]] && args+=(-k)
-  [[ -n "$(jq -r '.proxy // ""' <<<"$server")" ]] && args+=(--proxy "$(jq -r .proxy <<<"$server")")
+  local config proxy c
+  config="$(curl_option url "$url/check_mk/api/1.0/domain-types/service/collections/all")"
+  for c in "${columns[@]}"; do config+=$'\n'"$(curl_option data-urlencode "columns=$c")"; done
+  [[ -n "$query" ]] && config+=$'\n'"$(curl_option data-urlencode "query=$query")"
+  proxy="$(jq -r '.proxy // ""' <<<"$server")"
+  [[ -n "$proxy" ]] && config+=$'\n'"$(curl_option proxy "$proxy")"
 
   # The secret goes to curl through a file descriptor; on the command line every
   # local user could read it in /proc
-  if ! response="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s %s\n' "$user" "$secret") \
-    "$url/check_mk/api/1.0/domain-types/service/collections/all" 2>&1)"; then
+  if ! response="$(curl "${args[@]}" -K <(printf '%s\n' "$config") \
+    -H @<(printf 'Authorization: Bearer %s %s\n' "$user" "$secret") 2>&1)"; then
     failed "$(head -1 <<<"$response" | sed 's/^curl: ([0-9]*) //')"
     return
   fi
@@ -110,8 +113,9 @@ fetch() { # server json
   # One object per service. Services that are acknowledged, in downtime or on a host
   # that is down count as handled problems. A host that is down or unreachable also
   # gets an entry of its own, service "Host".
-  jq -c --arg url "$url" --arg server "$id" --arg serverName "$name" '
-    def clean: gsub("\\((!!|!|\\?)\\)"; "");
+  CMK_URL="$url" CMK_SERVER="$id" CMK_SERVER_NAME="$name" jq -c '
+    $ENV.CMK_URL as $url | $ENV.CMK_SERVER as $server | $ENV.CMK_SERVER_NAME as $serverName
+    | def clean: gsub("\\((!!|!|\\?)\\)"; "");
     def start($view): $url + "/check_mk/index.py?start_url=" + ($view | @uri);
     def link($h; $s): start("view.py?view_name=service&host=" + ($h | @uri) + "&service=" + ($s | @uri));
     # "load1=0.4;4;8;0; mem=41.2%;80;90" -> [{name, value, unit, warn, crit}]
@@ -192,8 +196,9 @@ for id in $(jq -r '.[].id' <<<"$servers"); do
 done | jq -s 'add' > "$WORK/results.json"
 
 # Merge the servers. One that failed keeps its last known services, marked stale.
-jq -n --argjson servers "$servers" --slurpfile results "$WORK/results.json" --slurpfile previous "$PREVIOUS" '
-  $results[0] as $results | $previous[0] as $previous
+printf '%s\n' "$servers" > "$WORK/servers.json"
+jq -n --slurpfile servers "$WORK/servers.json" --slurpfile results "$WORK/results.json" --slurpfile previous "$PREVIOUS" '
+  $servers[0] as $servers | $results[0] as $results | $previous[0] as $previous
   | def severity: if . == 2 then 3 elif . == 3 then 2 elif . == 1 then 1 else 0 end;
   def worst: max_by(severity) // 0;
   def count($state): map(select(.state == $state)) | length;
@@ -255,49 +260,57 @@ SEP=$'\x1f'
 
 # ---- Servers that became unreachable or reachable again. A server polled for the
 # first time announces nothing, and neither does locking or unlocking one.
-while IFS="$SEP" read -r kind name detail url; do
-  if [[ "$kind" == down ]]; then
-    send_notification normal "Checkmk $name unreachable" "$detail"
-  else
-    send_notification low "Checkmk $name reachable again" "$url"
-  fi
-done < <(jq -r --slurpfile prev "$PREVIOUS" '
+read -r down up < <(jq -r --slurpfile prev "$PREVIOUS" '
   $prev[0] as $prev
   | ($prev.servers // [] | map({key: .id, value: (if .locked then "locked" else .ok end)}) | from_entries) as $before
-  | .servers[] | . as $s
-  | select(($s.locked | not) and ($before | has($s.id)) and $before[$s.id] != "locked" and $before[$s.id] != $s.ok)
-  | [(if $s.ok then "up" else "down" end), $s.name, $s.error, $s.url] | join("\u001f")
+  | [ .servers[] | . as $s
+      | select(($s.locked | not) and ($before | has($s.id)) and $before[$s.id] != "locked" and $before[$s.id] != $s.ok) ]
+  | "\(map(select(.ok | not)) | length) \(map(select(.ok)) | length)"
 ' "$STATUS")
 
-# ---- Services that changed state. Services of a server that failed are stale, not
-# changed, so they never show up here.
-changes="$(jq -c --slurpfile prev "$PREVIOUS" '
+if ((${down:-0} == 1)); then
+  send_notification normal "Checkmk: a server is unreachable" "Open the panel for details" servers
+elif ((${down:-0} > 1)); then
+  send_notification normal "Checkmk: $down servers are unreachable" "Open the panel for details" servers
+fi
+if ((${up:-0} == 1)); then
+  send_notification low "Checkmk: a server is reachable again" "" servers
+elif ((${up:-0} > 1)); then
+  send_notification low "Checkmk: $up servers are reachable again" "" servers
+fi
+
+# ---- Services that changed state, as counts of the states they changed to.
+# Services of a server that failed are stale, not changed, so they never count.
+read -r count crit warn unknown ok < <(jq -r --slurpfile prev "$PREVIOUS" '
   def key: (.server // "") + "\u0000" + .host + "\u0000" + .service;
+  def count($state): map(select(.state == $state)) | length;
   $prev[0] as $prev
   | ($prev.services // [] | map(select(.stale | not) | {key: key, value: .state}) | from_entries) as $before
   | [ .services[] | select((.handled | not) and (.stale | not))
-      | key as $k | select(($before | has($k)) and $before[$k] != .state) | . + {before: $before[$k]} ]
-' "$STATUS")"
+      | key as $k | select(($before | has($k)) and $before[$k] != .state) ]
+  | "\(length) \(count(2)) \(count(1)) \(count(3)) \(count(0))"
+' "$STATUS")
+((${count:-0} == 0)) && exit 0
 
-count="$(jq length <<<"$changes")"
-((count == 0)) && exit 0
-
-names=(OK WARN CRIT UNKNOWN)
-multi="$(jq '.servers | length > 1' "$STATUS")"
-
-if ((count > MAX_NOTIFICATIONS)); then
-  summary="$(jq -r '.counts | "\(.crit) CRIT, \(.warn) WARN, \(.unknown) UNKNOWN"' "$STATUS")"
-  send_notification critical "Checkmk: $count services changed state" "Now $summary" "$(jq -r .url "$STATUS")/check_mk/"
-  exit 0
+if ((crit > 0)); then urgency=critical
+elif ((warn + unknown > 0)); then urgency=normal
+else urgency=low
 fi
 
-while IFS="$SEP" read -r state before host serverName service output link; do
-  case "$state" in
-    2) urgency=critical ;;
-    0) urgency=low ;;
-    *) urgency=normal ;;
-  esac
-  where="$host"
-  [[ "$multi" == true ]] && where="$host · $serverName"
-  send_notification "$urgency" "${names[$state]}  $service" "$where (was ${names[$before]})"$'\n'"$output" "$link"
-done < <(jq -r '.[] | [.state, .before, .host, .serverName, .service, .output, .link] | map(tostring) | join("\u001f")' <<<"$changes")
+# "a service is now CRIT", or "3 services changed state" with "2 CRIT, 1 OK"
+names=(OK WARN CRIT UNKNOWN)
+parts=()
+for state in 2 3 1 0; do
+  case "$state" in 2) n=$crit ;; 3) n=$unknown ;; 1) n=$warn ;; 0) n=$ok ;; esac
+  ((n > 0)) && parts+=("$n ${names[$state]}")
+done
+if ((count == 1)); then
+  if ((ok == 1)); then headline="Checkmk: a service recovered"
+  else headline="Checkmk: a service is now ${parts[0]#1 }"
+  fi
+  body="Open the panel for details"
+else
+  headline="Checkmk: $count services changed state"
+  body="Now $(IFS=,; echo "${parts[*]}" | sed 's/,/, /g')"
+fi
+send_notification "$urgency" "$headline" "$body" problems

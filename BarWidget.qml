@@ -46,8 +46,24 @@ BarWidget {
 
   function openWebUi(url) {
     var target = url || (status && status.url ? status.url + "/check_mk/" : "")
-    // A server's own browser, e.g. one going through a tunnel, or the default one
-    if (target) Quickshell.execDetached([openTool, target])
+    // A server's own browser, e.g. one going through a tunnel, or the default one.
+    // The link names hosts and services, so it goes over stdin, not the command line.
+    if (target) openComponent.createObject(root, { input: target })
+  }
+
+  Component {
+    id: openComponent
+    Process {
+      property string input: ""
+      command: [root.openTool]
+      stdinEnabled: true
+      running: true
+      onStarted: {
+        write(input + "\n")
+        input = ""
+      }
+      onExited: destroy()
+    }
   }
 
   function injectPanel() {

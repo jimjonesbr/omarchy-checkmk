@@ -2,28 +2,59 @@
 #
 # Open a Checkmk link in the browser of the server it belongs to.
 #
-#   checkmk-open <url>
+#   echo <url> | checkmk-open
 #
 # A server with a "browser" in servers.json, e.g.
 #   "browser": "chromium --proxy-server=socks5://127.0.0.1:1080"
-# has its links opened with that command, the url added as its last argument.
-# Links of other servers go to the default browser through xdg-open.
+# has its links opened with that command. Links of other servers go to the
+# default browser through xdg-open.
+#
+# Links name hosts and services, so neither this script nor the browser gets
+# them on the command line, where every local user could read them in /proc.
+# The link arrives on stdin, and the browser is given a page in a private
+# directory that forwards to it.
 
 set -uo pipefail
+umask 077
 
-url="${1:-}"
-[[ -n "$url" ]] || { echo "usage: checkmk-open <url>" >&2; exit 2; }
+IFS= read -r url || true
+[[ "$url" =~ ^https?:// ]] || { echo "usage: echo <http(s) url> | checkmk-open" >&2; exit 2; }
 
 DIR="${CHECKMK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-checkmk}"
+# The runtime directory is in memory and for this user only
+PAGES="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/omarchy-checkmk"
 
 # The server whose site URL is the longest start of the link
-browser="$(jq -r --arg u "$url" '
-  [.servers[]? | . as $s | select(($s.browser // "") != "" and ($u == $s.url or ($u | startswith($s.url + "/"))))]
+browser="$(CMK_LINK="$url" jq -r '
+  $ENV.CMK_LINK as $u
+  | [.servers[]? | . as $s | select(($s.browser // "") != "" and ($u == $s.url or ($u | startswith($s.url + "/"))))]
   | max_by(.url | length) | .browser // ""
 ' "$DIR/servers.json" 2>/dev/null)"
 
+mkdir -p "$PAGES" && chmod 700 "$PAGES"
+# Pages of earlier links are no longer needed
+find "$PAGES" -maxdepth 1 -name 'open-*.html' -mmin +1 -delete 2>/dev/null
+page="$(mktemp "$PAGES/open-XXXXXXXX.html")" || exit 1
+
+# (quoted, since bash 5.2 reads a bare & in the replacement as the match)
+html="${url//&/'&amp;'}"
+html="${html//\"/'&quot;'}"
+html="${html//</'&lt;'}"
+html="${html//>/'&gt;'}"
+cat > "$page" <<EOF
+<!doctype html>
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="refresh" content="0;url=$html">
+<title>Checkmk</title>
+<a href="$html">Open Checkmk</a>
+EOF
+# Gone once the browser has read it
+setsid -f sh -c 'sleep 60; rm -f "$1"' sh "$page" >/dev/null 2>&1
+
 if [[ -n "$browser" ]]; then
   read -ra cmd <<<"$browser"
-  exec "${cmd[@]}" "$url"
+  setsid -f "${cmd[@]}" "file://$page" >/dev/null 2>&1
+else
+  setsid -f xdg-open "$page" >/dev/null 2>&1
 fi
-exec xdg-open "$url"
