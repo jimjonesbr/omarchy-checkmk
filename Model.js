@@ -95,6 +95,19 @@ function summary(status) {
   return text
 }
 
+// The services of each host together, hosts in the order they first appear.
+// Services come sorted worst first, so the hosts end up ordered by their worst
+// service, and each host's services stay sorted.
+function groupByHost(services) {
+  var groups = {}, order = []
+  services.forEach(function(s) {
+    var key = (s.server || "") + "\u0000" + s.host
+    if (!groups[key]) { groups[key] = []; order.push(key) }
+    groups[key].push(s)
+  })
+  return order.reduce(function(all, key) { return all.concat(groups[key]) }, [])
+}
+
 function hostServices(services, server, host) {
   return services.filter(function(s) { return s.server === server && s.host === host && !s.isHost })
 }

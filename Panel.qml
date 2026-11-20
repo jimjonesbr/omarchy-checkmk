@@ -41,10 +41,11 @@ Panel {
   // Each list has its own rows, so a list never sees another one's rows while the view changes
   readonly property var serverRowsList: view === "servers" ? Model.serverRows(configured, polledServers) : []
   readonly property var hostRowsList: view === "hosts" ? hosts : []
-  readonly property var serviceRowsList: Model.byState(
-    view === "host" ? Model.hostServices(services, currentServer, currentHost)
-    : view === "problems" ? (showAll || stateFilter >= 0 ? services : Model.problems(services, true))
-    : [], stateFilter)
+  readonly property var serviceRowsList: view === "host"
+    ? Model.byState(Model.hostServices(services, currentServer, currentHost), stateFilter)
+    : view === "problems"
+      ? Model.groupByHost(Model.byState(showAll || stateFilter >= 0 ? services : Model.problems(services, true), stateFilter))
+      : []
   // The counts on top: of the open host, otherwise of all servers
   readonly property var stateCounts: {
     var c = view === "host" ? (hostInfo ? hostInfo.counts : null) : (status ? status.counts : null)
@@ -163,8 +164,9 @@ Panel {
   // One level up: host -> hosts, servers -> hosts or problems, edit -> servers
   function back() {
     if (view === "host") {
+      // Back to the list the host was opened from, hosts or problems
       var server = currentServer, host = currentHost
-      setView("hosts")
+      setView(mainView)
       selectWhere(function(r) { return r.server === server && r.host === host })
     } else if (view === "servers") {
       setView(mainView)
@@ -1238,261 +1240,294 @@ Panel {
               id: serviceRepeater
               model: root.serviceRowsList
 
-              Rectangle {
-                id: row
+              Column {
+                id: serviceEntry
                 required property var modelData
                 required property int index
-                readonly property bool selected: index === root.cursor
-                readonly property string rowKey: root.rowKey(modelData)
-                readonly property bool isExpanded: root.expanded === rowKey
-                readonly property bool hasGraph: isExpanded && root.graph.key === rowKey
-
+                // The problems list groups the services by host, under a heading
+                readonly property var previous: index > 0 ? root.serviceRowsList[index - 1] : null
+                readonly property bool startsHost: root.view === "problems"
+                  && (!previous || previous.host !== modelData.host || previous.server !== modelData.server)
                 width: parent.width
-                height: rowContent.implicitHeight + Style.space(12)
-                radius: Math.min(6, Style.cornerRadius)
-                // An expanded row keeps the plain background, so its metrics read like
-                // the network panel's details; an accent bar marks it instead
-                color: !isExpanded && (selected || rowMouse.containsMouse) ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
-                opacity: modelData.handled || modelData.stale ? 0.55 : 1
+                spacing: Style.space(2)
+
+                Item {
+                  visible: serviceEntry.startsHost
+                  width: parent.width
+                  height: hostHeading.implicitHeight + (serviceEntry.index > 0 ? Style.space(10) : Style.space(2))
+
+                  Text {
+                    id: hostHeading
+                    anchors.left: parent.left
+                    anchors.leftMargin: Style.space(8)
+                    anchors.bottom: parent.bottom
+                    width: Math.min(implicitWidth, parent.width - Style.space(16))
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: serviceEntry.modelData.host
+                      + (root.multiServer ? "  ·  " + serviceEntry.modelData.serverName : "")
+                    color: headingMouse.containsMouse ? Color.accent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+
+                    // Opens the host, as in the hosts list
+                    MouseArea {
+                      id: headingMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.openHost(serviceEntry.modelData.server, serviceEntry.modelData.host)
+                    }
+                  }
+                }
 
                 Rectangle {
-                  visible: row.isExpanded
-                  width: 2
-                  height: parent.height
-                  radius: 1
-                  color: Color.accent
-                }
+                  id: row
+                  readonly property var modelData: serviceEntry.modelData
+                  readonly property int index: serviceEntry.index
+                  readonly property bool selected: index === root.cursor
+                  readonly property string rowKey: root.rowKey(modelData)
+                  readonly property bool isExpanded: root.expanded === rowKey
+                  readonly property bool hasGraph: isExpanded && root.graph.key === rowKey
 
-                Text {
-                  id: stateTag
-                  x: Style.space(8)
-                  y: Style.space(6)
-                  width: Style.space(44)
-                  text: Model.stateName(row.modelData.state)
-                  color: root.colorFor(row.modelData.state)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  font.bold: true
-                }
+                  width: parent.width
+                  height: rowContent.implicitHeight + Style.space(12)
+                  radius: Math.min(6, Style.cornerRadius)
+                  // An expanded row keeps the plain background, so its metrics read like
+                  // the network panel's details; an accent bar marks it instead
+                  color: !isExpanded && (selected || rowMouse.containsMouse) ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
+                  opacity: modelData.handled || modelData.stale ? 0.55 : 1
 
-                MouseArea {
-                  id: rowMouse
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: {
-                    root.cursor = row.index
-                    root.expanded = row.isExpanded ? "" : root.rowKey(row.modelData)
-                  }
-                  onDoubleClicked: root.openInCheckmk(row.modelData.link)
-                }
-
-                Column {
-                  id: rowContent
-                  anchors.left: stateTag.right
-                  anchors.right: parent.right
-                  anchors.rightMargin: Style.space(8)
-                  y: Style.space(6)
-                  spacing: Style.space(2)
-
-                  Item {
-                    width: parent.width
-                    height: serviceText.implicitHeight
-
-                    Text {
-                      id: serviceText
-                      anchors.left: parent.left
-                      anchors.right: ageText.left
-                      anchors.rightMargin: Style.space(8)
-                      elide: Text.ElideRight
-                      textFormat: Text.PlainText
-                      text: row.modelData.service
-                      color: root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                      font.bold: true
-                    }
-                    Text {
-                      id: ageText
-                      anchors.right: parent.right
-                      textFormat: Text.PlainText
-                      text: Model.age(root.now - row.modelData.since)
-                        + (row.modelData.handled ? " · handled" : "")
-                        + (row.modelData.stale ? " · stale" : "")
-                        + (row.modelData.overdue && !row.modelData.stale ? " · overdue" : "")
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
+                  Rectangle {
+                    visible: row.isExpanded
+                    width: 2
+                    height: parent.height
+                    radius: 1
+                    color: Color.accent
                   }
 
-                  // The host is obvious inside the host view
                   Text {
-                    visible: root.view !== "host"
-                    textFormat: Text.PlainText
-                    text: row.modelData.host + (root.multiServer ? " · " + row.modelData.serverName : "")
-                    color: root.dim
+                    id: stateTag
+                    x: Style.space(8)
+                    y: Style.space(6)
+                    width: Style.space(44)
+                    text: Model.stateName(row.modelData.state)
+                    color: root.colorFor(row.modelData.state)
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
+                    font.bold: true
                   }
 
-                  Text {
-                    width: parent.width
-                    wrapMode: Text.Wrap
-                    maximumLineCount: row.isExpanded ? 20 : (row.modelData.state === 0 ? 1 : 2)
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
-                    text: row.isExpanded ? Model.detailsText(row.modelData) : row.modelData.output
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                  }
-
-                  // When the data was produced and how often the service is checked
-                  Text {
-                    visible: row.isExpanded && text !== ""
-                    width: parent.width
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
-                    text: row.isExpanded ? Model.timingText(row.modelData, root.now) : ""
-                    color: row.modelData.overdue ? Model.WARN_COLOR : root.dim
-                    opacity: row.modelData.overdue ? 1 : 0.8
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-
-                  // ---- Metrics of the expanded service, laid out like the network panel's details
-                  Item {
-                    visible: metricsGrid.visible
-                    width: 1
-                    height: Style.space(4)
-                  }
-
-                  GridLayout {
-                    id: metricsGrid
-                    visible: row.isExpanded && row.modelData.metrics.length > 0
-                    width: parent.width
-                    columns: row.modelData.metrics.length > 1 ? 4 : 2
-                    columnSpacing: Style.space(16)
-                    rowSpacing: Style.spacing.labelGap
-
-                    // Two cells per metric: label, value
-                    Repeater {
-                      model: row.isExpanded
-                        ? [].concat.apply([], row.modelData.metrics.map(function(m) {
-                            return [{ value: false, metric: m }, { value: true, metric: m }]
-                          }))
-                        : []
-
-                      Text {
-                        id: metricCell
-                        readonly property int level: Model.metricState(modelData.metric)
-                        readonly property string levels: Model.metricLevels(modelData.metric)
-
-                        Layout.fillWidth: modelData.value
-                        horizontalAlignment: modelData.value ? Text.AlignRight : Text.AlignLeft
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        text: modelData.value ? Model.metricValue(modelData.metric) : Model.metricLabel(modelData.metric)
-                        color: modelData.value && level > 0 ? root.colorFor(level) : root.fg
-                        opacity: modelData.value ? 1 : 0.6
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                        font.bold: modelData.value && level > 0
-
-                        HoverHandler {
-                          id: metricHover
-                          enabled: modelData.value && metricCell.levels !== ""
-                        }
-
-                        PanelToolTip {
-                          visible: metricHover.hovered
-                          text: metricCell.levels
-                          fontFamily: root.fontFamily
-                        }
-                      }
+                  MouseArea {
+                    id: rowMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.cursor = row.index
+                      root.expanded = row.isExpanded ? "" : root.rowKey(row.modelData)
                     }
-                  }
-
-                  // ---- History: range pills, then one graph per metric
-                  Row {
-                    visible: row.isExpanded && row.modelData.metrics.length > 0 && !row.modelData.stale
-                    topPadding: Style.space(8)
-                    spacing: Style.space(6)
-
-                    Text {
-                      anchors.verticalCenter: rangePills.verticalCenter
-                      anchors.verticalCenterOffset: Style.space(4)
-                      text: "History"
-                      color: root.fg
-                      opacity: 0.6
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.bodySmall
-                      rightPadding: Style.space(4)
-                    }
-
-                    Row {
-                      id: rangePills
-                      spacing: Style.space(6)
-
-                      Repeater {
-                        model: root.graphRanges
-                        Button {
-                          text: modelData.id
-                          selected: root.graph.key === row.rowKey && root.graph.range === modelData.id
-                          bordered: true
-                          foreground: root.fg
-                          fontFamily: root.fontFamily
-                          fontSize: Style.font.caption
-                          verticalPadding: Style.space(2)
-                          horizontalPadding: Style.space(8)
-                          onClicked: root.showGraph(row.modelData, modelData.id)
-                        }
-                      }
-                    }
-                  }
-
-                  Text {
-                    visible: row.hasGraph && (!!root.graph.loading || !!root.graph.error)
-                    width: parent.width
-                    topPadding: Style.space(6)
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
-                    text: root.graph.loading ? "Loading…" : (root.graph.error || "")
-                    color: root.graph.loading ? root.dim : root.urgent
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
+                    onDoubleClicked: root.openInCheckmk(row.modelData.link)
                   }
 
                   Column {
-                    visible: row.hasGraph && !!root.graph.data
-                    width: parent.width
-                    topPadding: Style.space(8)
-                    spacing: Style.space(12)
+                    id: rowContent
+                    anchors.left: stateTag.right
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(8)
+                    y: Style.space(6)
+                    spacing: Style.space(2)
 
-                    Repeater {
-                      model: row.hasGraph && root.graph.data ? root.graph.data.curves : []
+                    Item {
+                      width: parent.width
+                      height: serviceText.implicitHeight
 
-                      MetricGraph {
-                        width: parent.width
-                        curve: modelData
-                        metric: row.modelData.metrics.filter(function(m) { return m.name === modelData.metric })[0] || null
+                      Text {
+                        id: serviceText
+                        anchors.left: parent.left
+                        anchors.right: ageText.left
+                        anchors.rightMargin: Style.space(8)
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
+                        text: row.modelData.service
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        font.bold: true
+                      }
+                      Text {
+                        id: ageText
+                        anchors.right: parent.right
+                        textFormat: Text.PlainText
+                        text: Model.age(root.now - row.modelData.since)
+                          + (row.modelData.handled ? " · handled" : "")
+                          + (row.modelData.stale ? " · stale" : "")
+                          + (row.modelData.overdue && !row.modelData.stale ? " · overdue" : "")
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
                       }
                     }
-                  }
 
-                  Text {
-                    visible: row.isExpanded
-                    topPadding: Style.space(4)
-                    text: "open in Checkmk ↗"
-                    color: Color.accent
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
+                    Text {
+                      width: parent.width
+                      wrapMode: Text.Wrap
+                      maximumLineCount: row.isExpanded ? 20 : (row.modelData.state === 0 ? 1 : 2)
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: row.isExpanded ? Model.detailsText(row.modelData) : row.modelData.output
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
 
-                    MouseArea {
-                      anchors.fill: parent
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: root.openInCheckmk(row.modelData.link)
+                    // When the data was produced and how often the service is checked
+                    Text {
+                      visible: row.isExpanded && text !== ""
+                      width: parent.width
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: row.isExpanded ? Model.timingText(row.modelData, root.now) : ""
+                      color: row.modelData.overdue ? Model.WARN_COLOR : root.dim
+                      opacity: row.modelData.overdue ? 1 : 0.8
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    // ---- Metrics of the expanded service, laid out like the network panel's details
+                    Item {
+                      visible: metricsGrid.visible
+                      width: 1
+                      height: Style.space(4)
+                    }
+
+                    GridLayout {
+                      id: metricsGrid
+                      visible: row.isExpanded && row.modelData.metrics.length > 0
+                      width: parent.width
+                      columns: row.modelData.metrics.length > 1 ? 4 : 2
+                      columnSpacing: Style.space(16)
+                      rowSpacing: Style.spacing.labelGap
+
+                      // Two cells per metric: label, value
+                      Repeater {
+                        model: row.isExpanded
+                          ? [].concat.apply([], row.modelData.metrics.map(function(m) {
+                              return [{ value: false, metric: m }, { value: true, metric: m }]
+                            }))
+                          : []
+
+                        Text {
+                          id: metricCell
+                          readonly property int level: Model.metricState(modelData.metric)
+                          readonly property string levels: Model.metricLevels(modelData.metric)
+
+                          Layout.fillWidth: modelData.value
+                          horizontalAlignment: modelData.value ? Text.AlignRight : Text.AlignLeft
+                          textFormat: Text.PlainText
+                          elide: Text.ElideRight
+                          text: modelData.value ? Model.metricValue(modelData.metric) : Model.metricLabel(modelData.metric)
+                          color: modelData.value && level > 0 ? root.colorFor(level) : root.fg
+                          opacity: modelData.value ? 1 : 0.6
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                          font.bold: modelData.value && level > 0
+
+                          HoverHandler {
+                            id: metricHover
+                            enabled: modelData.value && metricCell.levels !== ""
+                          }
+
+                          PanelToolTip {
+                            visible: metricHover.hovered
+                            text: metricCell.levels
+                            fontFamily: root.fontFamily
+                          }
+                        }
+                      }
+                    }
+
+                    // ---- History: range pills, then one graph per metric
+                    Row {
+                      visible: row.isExpanded && row.modelData.metrics.length > 0 && !row.modelData.stale
+                      topPadding: Style.space(8)
+                      spacing: Style.space(6)
+
+                      Text {
+                        anchors.verticalCenter: rangePills.verticalCenter
+                        anchors.verticalCenterOffset: Style.space(4)
+                        text: "History"
+                        color: root.fg
+                        opacity: 0.6
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        rightPadding: Style.space(4)
+                      }
+
+                      Row {
+                        id: rangePills
+                        spacing: Style.space(6)
+
+                        Repeater {
+                          model: root.graphRanges
+                          Button {
+                            text: modelData.id
+                            selected: root.graph.key === row.rowKey && root.graph.range === modelData.id
+                            bordered: true
+                            foreground: root.fg
+                            fontFamily: root.fontFamily
+                            fontSize: Style.font.caption
+                            verticalPadding: Style.space(2)
+                            horizontalPadding: Style.space(8)
+                            onClicked: root.showGraph(row.modelData, modelData.id)
+                          }
+                        }
+                      }
+                    }
+
+                    Text {
+                      visible: row.hasGraph && (!!root.graph.loading || !!root.graph.error)
+                      width: parent.width
+                      topPadding: Style.space(6)
+                      wrapMode: Text.Wrap
+                      textFormat: Text.PlainText
+                      text: root.graph.loading ? "Loading…" : (root.graph.error || "")
+                      color: root.graph.loading ? root.dim : root.urgent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    Column {
+                      visible: row.hasGraph && !!root.graph.data
+                      width: parent.width
+                      topPadding: Style.space(8)
+                      spacing: Style.space(12)
+
+                      Repeater {
+                        model: row.hasGraph && root.graph.data ? root.graph.data.curves : []
+
+                        MetricGraph {
+                          width: parent.width
+                          curve: modelData
+                          metric: row.modelData.metrics.filter(function(m) { return m.name === modelData.metric })[0] || null
+                        }
+                      }
+                    }
+
+                    Text {
+                      visible: row.isExpanded
+                      topPadding: Style.space(4)
+                      text: "open in Checkmk ↗"
+                      color: Color.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.openInCheckmk(row.modelData.link)
+                      }
                     }
                   }
                 }

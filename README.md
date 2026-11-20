@@ -66,6 +66,9 @@ Left click opens the panel, middle click polls now, right click opens Checkmk.
 | `i`               | about: version, author, license                  |
 | `r`               | poll now                                         |
 
+The problems list groups the services by host, the host with the worst problem
+first. Clicking a host's name opens it.
+
 Clicking one of the counts on top (CRIT, UNKN, WARN, OK) shows only the
 services in that state, clicking it again shows all. Inside a host the counts
 are those of the host.
