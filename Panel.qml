@@ -117,6 +117,10 @@ Panel {
 
   function setView(name) {
     if (view === name) return
+    // A password typed but not saved is not kept once its form is left, by
+    // Cancel, Esc or any other view
+    if (view === "edit") secretField.text = ""
+    if (view === "unlock") unlockField.text = ""
     if (name === "hosts" || name === "problems") mainView = name
     view = name
     stateFilter = -1
