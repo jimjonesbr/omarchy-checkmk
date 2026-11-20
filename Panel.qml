@@ -1516,6 +1516,9 @@ Panel {
                 required property int index
                 readonly property bool selected: index === root.cursor
                 readonly property bool confirming: root.confirmDelete === modelData.id
+                // The actions show on the selected row and under the mouse: a click on
+                // the row itself opens the form
+                readonly property bool active: selected || serverMouse.containsMouse
 
                 width: parent.width
                 height: serverContent.implicitHeight + Style.space(14)
@@ -1618,7 +1621,8 @@ Panel {
                     }
                   }
                   Text {
-                    visible: serverRow.selected && !serverRow.confirming
+                    // A disconnected server always offers to connect again
+                    visible: (serverRow.active || serverRow.modelData.disconnected) && !serverRow.confirming
                     text: serverRow.modelData.disconnected ? "connect" : "disconnect"
                     color: serverRow.modelData.disconnected ? Color.accent : root.dim
                     font.family: root.fontFamily
@@ -1632,7 +1636,7 @@ Panel {
                     }
                   }
                   Text {
-                    visible: serverRow.selected || serverRow.confirming
+                    visible: serverRow.active || serverRow.confirming
                     text: serverRow.confirming ? "remove? x again" : "remove"
                     color: serverRow.confirming ? root.urgent : root.dim
                     font.family: root.fontFamily
