@@ -16,8 +16,9 @@ Requires Checkmk 2.2 or newer, plus `curl`, `jq` and `python-gobject` (all part
 of Omarchy), and `keyutils` or `secret-tool` to keep the secret. Without
 `python-gobject`, notifications only count the changes.
 
-> **Beta.** This is still under development and not yet ready for production use.
-> Expect rough edges, and please report them in the [issues](https://github.com/jimjonesbr/omarchy-checkmk/issues).
+> **Beta.** The widget only reads from Checkmk, but it is still young: expect
+> rough edges, and please report them in the
+> [issues](https://github.com/jimjonesbr/omarchy-checkmk/issues).
 
 ## Install
 
