@@ -36,6 +36,7 @@ start="$(date -u -d "-$seconds seconds" +%Y-%m-%dT%H:%M:%SZ)"
 
 args=(-sS --max-time 20 -w '\n%{http_code}' -H "Accept: application/json" -H "Content-Type: application/json")
 [[ "$(jq -r '.insecure // false' <<<"$server")" == true ]] && args+=(-k)
+[[ -n "$(jq -r '.proxy // ""' <<<"$server")" ]] && args+=(--proxy "$(jq -r .proxy <<<"$server")")
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

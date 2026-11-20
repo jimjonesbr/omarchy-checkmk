@@ -330,6 +330,7 @@ Panel {
   property bool setupOk: false
   property string setupMessage: ""
   property var setupWarnings: []
+  property bool advancedOpen: false
   readonly property var editServer: {
     for (var i = 0; i < configured.length; i++) if (configured[i].id === editId) return configured[i]
     return null
@@ -363,6 +364,9 @@ Panel {
     hostFilterField.text = s ? (s.hostFilter || "") : ""
     insecureToggle.checked = !!s && s.insecure === true
     rememberToggle.checked = !!s && s.remember !== false
+    proxyField.text = s ? (s.proxy || "") : ""
+    browserField.text = s ? (s.browser || "") : ""
+    advancedOpen = proxyField.text !== "" || browserField.text !== ""
     setView("edit")
     Qt.callLater(function() { (id ? nameField : urlField).forceActiveFocus() })
   }
@@ -377,7 +381,9 @@ Panel {
       serviceFilter: serviceFilterField.text.trim(),
       hostFilter: hostFilterField.text.trim(),
       insecure: insecureToggle.checked,
-      remember: rememberToggle.checked
+      remember: rememberToggle.checked,
+      proxy: proxyField.text.trim(),
+      browser: browserField.text.trim()
     })
   }
 
@@ -1748,7 +1754,7 @@ Panel {
               placeholderText: "e.g. ^vm-db"
               foreground: root.fg
               font.family: root.fontFamily
-              KeyNavigation.tab: nameField
+              KeyNavigation.tab: root.advancedOpen ? proxyField : nameField
               Keys.onEscapePressed: root.back()
               onAccepted: root.runSetup("test")
             }
@@ -1784,6 +1790,56 @@ Panel {
               foreground: root.fg
               fontFamily: root.fontFamily
               onClicked: checked = !checked
+            }
+
+            // ---- Advanced: reaching a server on another network through a tunnel
+            Button {
+              text: (root.advancedOpen ? "\u{f0140}" : "\u{f0142}") + "  Advanced"
+              foreground: root.dim
+              fontFamily: root.fontFamily
+              onClicked: root.advancedOpen = !root.advancedOpen
+            }
+
+            Column {
+              visible: root.advancedOpen
+              width: parent.width
+              spacing: Style.space(8)
+
+              FieldLabel { label: "Proxy"; hint: "for a server only reachable through a tunnel" }
+              TextField {
+                id: proxyField
+                width: parent.width
+                placeholderText: "e.g. localhost:1080 for ssh -D 1080 jumphost"
+                foreground: root.fg
+                font.family: root.fontFamily
+                KeyNavigation.tab: browserField
+                Keys.onEscapePressed: root.back()
+                onAccepted: root.runSetup("test")
+              }
+
+              FieldLabel { label: "Browser"; hint: "opens this server's links, empty for the default" }
+              TextField {
+                id: browserField
+                width: parent.width
+                placeholderText: "e.g. chromium --proxy-server=socks5://localhost:1080"
+                foreground: root.fg
+                font.family: root.fontFamily
+                KeyNavigation.tab: nameField
+                Keys.onEscapePressed: root.back()
+                onAccepted: root.runSetup("test")
+              }
+
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: "A bare host:port is a SOCKS5 proxy that also looks up the host names "
+                  + "through the tunnel. Use http://host:port for an HTTP proxy. The tunnel itself "
+                  + "has to be open; the widget does not start it."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
             }
 
             Item {

@@ -11,6 +11,7 @@ BarWidget {
   readonly property string poller: String(Qt.resolvedUrl("bin/checkmk-poll")).replace(/^file:\/\//, "")
   readonly property string configTool: String(Qt.resolvedUrl("bin/checkmk-config")).replace(/^file:\/\//, "")
   readonly property string graphTool: String(Qt.resolvedUrl("bin/checkmk-graph")).replace(/^file:\/\//, "")
+  readonly property string openTool: String(Qt.resolvedUrl("bin/checkmk-open")).replace(/^file:\/\//, "")
   readonly property string statusPath: (Quickshell.env("XDG_CACHE_HOME") || Quickshell.env("HOME") + "/.cache")
     + "/omarchy-checkmk/status.json"
 
@@ -45,7 +46,8 @@ BarWidget {
 
   function openWebUi(url) {
     var target = url || (status && status.url ? status.url + "/check_mk/" : "")
-    if (target) Quickshell.execDetached(["xdg-open", target])
+    // A server's own browser, e.g. one going through a tunnel, or the default one
+    if (target) Quickshell.execDetached([openTool, target])
   }
 
   function injectPanel() {

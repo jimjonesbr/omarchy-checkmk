@@ -1,0 +1,29 @@
+#!/bin/bash
+#
+# Open a Checkmk link in the browser of the server it belongs to.
+#
+#   checkmk-open <url>
+#
+# A server with a "browser" in servers.json, e.g.
+#   "browser": "chromium --proxy-server=socks5://127.0.0.1:1080"
+# has its links opened with that command, the url added as its last argument.
+# Links of other servers go to the default browser through xdg-open.
+
+set -uo pipefail
+
+url="${1:-}"
+[[ -n "$url" ]] || { echo "usage: checkmk-open <url>" >&2; exit 2; }
+
+DIR="${CHECKMK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-checkmk}"
+
+# The server whose site URL is the longest start of the link
+browser="$(jq -r --arg u "$url" '
+  [.servers[]? | . as $s | select(($s.browser // "") != "" and ($u == $s.url or ($u | startswith($s.url + "/"))))]
+  | max_by(.url | length) | .browser // ""
+' "$DIR/servers.json" 2>/dev/null)"
+
+if [[ -n "$browser" ]]; then
+  read -ra cmd <<<"$browser"
+  exec "${cmd[@]}" "$url"
+fi
+exec xdg-open "$url"

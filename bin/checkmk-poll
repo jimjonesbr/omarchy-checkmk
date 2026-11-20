@@ -37,7 +37,7 @@ send_notification() { # urgency headline description [url]
   body="${body//&/'&amp;'}"
   body="${body//</'&lt;'}"
   body="${body//>/'&gt;'}"
-  [[ -n "${4:-}" ]] && exec_args=(--exec xdg-open "$4")
+  [[ -n "${4:-}" ]] && exec_args=(--exec "$BIN/checkmk-open" "$4")
 
   if command -v omarchy-notification-send >/dev/null; then
     omarchy-notification-send --app-name Checkmk -g "󰗶" -u "$1" "$2" "$body" "${exec_args[@]}"
@@ -91,6 +91,7 @@ fetch() { # server json
   for c in "${columns[@]}"; do args+=(--data-urlencode "columns=$c"); done
   [[ -n "$query" ]] && args+=(--data-urlencode "query=$query")
   [[ "$(jq -r '.insecure // false' <<<"$server")" == true ]] && args+=(-k)
+  [[ -n "$(jq -r '.proxy // ""' <<<"$server")" ]] && args+=(--proxy "$(jq -r .proxy <<<"$server")")
 
   # The secret goes to curl through a file descriptor; on the command line every
   # local user could read it in /proc
