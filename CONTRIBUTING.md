@@ -43,6 +43,16 @@ CMK_LAB=staging CMK_WEB_PORT=8081 deploy-checkmk/lab-hosts.sh sync
 
 After changing the code, run `omarchy-restart-shell` to reload the widget.
 
+## Tests
+
+The logic of the panel (`Model.js`) and the rules for notifications
+(`lib/notifications.jq`) have tests. They need [Node.js](https://nodejs.org)
+and `jq`, but no Checkmk:
+
+```bash
+node --test tests/
+```
+
 ## Releasing a new version
 
 The version lives only in `manifest.json`; the panel's about page reads it from
