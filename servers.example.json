@@ -19,7 +19,19 @@
       "hostFilter": "^stg-",
       "insecure": true,
       "remember": false,
+      "muted": true,
       "timeout": 20
+    },
+    {
+      "id": "campus",
+      "name": "Campus",
+      "url": "https://monitoring.campus.example.org/main",
+      "user": "omarchy",
+      "serviceFilter": "",
+      "hostFilter": "",
+      "insecure": false,
+      "remember": false,
+      "proxy": "socks5h://localhost:1080"
     }
   ]
 }

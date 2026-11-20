@@ -7,13 +7,15 @@
 #   checkmk-poll              poll once
 #   checkmk-poll --quiet      poll once without notifications
 #
-# Servers: see checkmk-config
+# Servers: see checkmk-config. Disconnected servers are skipped, muted ones send
+# no notifications.
 # Output:  ${XDG_CACHE_HOME:-~/.cache}/omarchy-checkmk/status.json
 #
 # Nothing from Checkmk, nor the site URL or filters, goes on a command line, where
 # every local user could read it in /proc: curl takes them from its config
 # stream, jq from files and the environment. For the same reason notifications
-# only count, e.g. "2 services are now CRIT", and clicking one opens the panel.
+# only count, e.g. "3 services changed state" with "Now 2 CRIT, 1 OK", and
+# clicking one opens the panel.
 
 set -uo pipefail
 # The status file and temporary files are for this user only

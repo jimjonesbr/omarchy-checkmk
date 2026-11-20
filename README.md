@@ -7,8 +7,8 @@ A bar widget for the Omarchy shell that keeps an eye on one or more Checkmk serv
 - A popup lists hosts and problems, with service details, metrics and history graphs.
 - A desktop notification tells when services change state, e.g. "2 services
   changed state, now 1 CRIT, 1 OK". Clicking it opens the panel with the details.
-  Notifications name no hosts or services: their text is passed on command lines,
-  which every local user can read.
+  Notifications name no hosts, services or servers: their text is passed on
+  command lines, which every local user can read.
 
 Requires Checkmk 2.2 or newer, plus `curl` and `jq`, and `keyutils` or
 `secret-tool` to keep the secret.
@@ -62,7 +62,10 @@ Left click opens the panel, middle click polls now, right click opens Checkmk.
 | `f`               | only CRIT, UNKNOWN, WARN or OK services, or all  |
 | `o`               | open in Checkmk                                  |
 | `s`               | servers                                          |
+| `n`               | in the server list: add a server                 |
+| `x`               | in the server list: remove, press twice          |
 | `d`               | in the server list: disconnect or connect        |
+| `u`               | in the server list: lock or unlock               |
 | `i`               | about: version, author, license                  |
 | `r`               | poll now                                         |
 
@@ -80,8 +83,9 @@ A server can be disconnected for a while, with *Disconnect* in its form or `d`
 in the server list: it is no longer polled and leaves the icon, the lists and
 the notifications. It keeps its settings and a remembered password; a password
 kept in memory only is forgotten. *Connect* brings the server back and asks for
-a forgotten password first. *Mute notifications* in the form keeps a server
-polled and shown, but silences its notifications.
+a forgotten password first. While no server is connected, the icon is grey.
+*Mute notifications* in the form keeps a server polled and shown, but silences
+its notifications.
 
 An expanded service shows when it was last checked and how often. Services that
 Checkmk considers stale (no fresh result for 1.5 check intervals) are marked
