@@ -34,8 +34,8 @@
 #
 # Settings and secrets never go on a command line, where every local user could
 # read them in /proc: jq gets them through the environment or stdin, curl through
-# its config stream. The exception is secret-tool, which takes the URL and user
-# that a remembered secret is filed under only as arguments.
+# its config stream. secret-tool takes the attributes of a keyring entry only as
+# arguments, so entries are filed under a salted hash of URL and user.
 #
 # A server may also name a "secretFile" of its own, e.g. for the test instance;
 # that file is never expired or deleted.
@@ -53,6 +53,8 @@ umask 077
 DIR="${CHECKMK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-checkmk}"
 SERVERS="$DIR/servers.json"
 SECRETS="$DIR/secrets"
+SALT="$DIR/keyring-salt"
+KEYRING_MIGRATED="$DIR/keyring-migrated"
 SESSION_HOURS=8
 REMEMBER_DAYS=30
 # Single server configuration of earlier versions, migrated on first use
@@ -100,21 +102,59 @@ keyring_available() {
   command -v secret-tool >/dev/null
 }
 
+# A keyring entry is filed under a key made from url and user, so that two
+# servers with the same url and user share it. secret-tool takes attributes
+# only on its command line, where every local user could read them, so the key
+# is a hash, salted with a random value of this user's to make it impossible to
+# check guesses of the url against it.
+keyring_key() { # url user
+  if [[ ! -s "$SALT" ]]; then
+    mkdir -p "$DIR"
+    head -c 32 /dev/urandom | base64 > "$SALT.tmp" && mv "$SALT.tmp" "$SALT"
+  fi
+  { cat "$SALT"; printf '%s\n%s' "$1" "$2"; } | sha256sum | cut -d' ' -f1
+}
+
 keyring_lookup() { # url user
-  keyring_available && secret-tool lookup application omarchy-checkmk url "$1" user "$2" 2>/dev/null
+  keyring_available && secret-tool lookup application omarchy-checkmk key "$(keyring_key "$1" "$2")" 2>/dev/null
 }
 
 keyring_store() { # url user secret
   keyring_available || return 1
-  printf '%s' "$3" | secret-tool store --label "Checkmk $2@$1" application omarchy-checkmk url "$1" user "$2" 2>/dev/null
+  printf '%s' "$3" | secret-tool store --label "Checkmk password (Omarchy widget)" \
+    application omarchy-checkmk key "$(keyring_key "$1" "$2")" 2>/dev/null
 }
 
-# Keyring entries are keyed by url and user, so two servers entries may share one
+keyring_clear() { # url user
+  keyring_available && secret-tool clear application omarchy-checkmk key "$(keyring_key "$1" "$2")" 2>/dev/null
+  return 0
+}
+
+# Removes the entry of url and user unless another server still remembers it
 keyring_clear_unused() { # url user
   local users
   users="$(servers | CMK_U="$1" CMK_N="$2" jq '$ENV.CMK_U as $u | $ENV.CMK_N as $n
     | [.[] | select(.url == $u and .user == $n and .remember != false)] | length')"
-  ((users == 0)) && keyring_available && secret-tool clear application omarchy-checkmk url "$1" user "$2" 2>/dev/null
+  ((users == 0)) && keyring_clear "$1" "$2"
+  return 0
+}
+
+# Up to 0.4.0-beta.1 entries were filed under the plain url and user. They move
+# to their hashed key once; the marker keeps the old lookups from running again.
+migrate_keyring() {
+  [[ -e "$KEYRING_MIGRATED" ]] && return 0
+  keyring_available || return 0
+  local s url user secret
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    url="$(jq -r .url <<<"$s")"
+    user="$(jq -r .user <<<"$s")"
+    secret="$(secret-tool lookup application omarchy-checkmk url "$url" user "$user" 2>/dev/null)"
+    [[ -n "$secret" ]] || continue
+    keyring_store "$url" "$user" "$secret" &&
+      secret-tool clear application omarchy-checkmk url "$url" user "$user" 2>/dev/null
+  done < <(servers | jq -c 'unique_by([.url, .user])[] | select(.remember != false and (.secretFile // "") == "")')
+  [[ -e "$SERVERS" ]] && touch "$KEYRING_MIGRATED"
   return 0
 }
 
@@ -212,7 +252,7 @@ forget_secret() { # server json
   id="$(jq -r .id <<<"$1")"
   rm -f "$SECRETS/$id"
   session_clear "$id"
-  keyring_available && secret-tool clear application omarchy-checkmk url "$(jq -r .url <<<"$1")" user "$(jq -r .user <<<"$1")" 2>/dev/null
+  keyring_clear "$(jq -r .url <<<"$1")" "$(jq -r .user <<<"$1")"
   set_remembered_until "$id" 0
 }
 
@@ -534,6 +574,7 @@ lock() { # [id]
 }
 
 migrate_legacy
+migrate_keyring
 expire_secrets
 
 case "${1:-}" in
