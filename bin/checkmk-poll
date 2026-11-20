@@ -13,9 +13,10 @@
 #
 # Nothing from Checkmk, nor the site URL or filters, goes on a command line, where
 # every local user could read it in /proc: curl takes them from its config
-# stream, jq from files and the environment. For the same reason notifications
-# only count, e.g. "3 services changed state" with "Now 2 CRIT, 1 OK", and
-# clicking one opens the panel.
+# stream, jq from files and the environment. Notifications name the service and
+# host and carry the check output, so checkmk-notify sends them over D-Bus, and
+# clicking one opens that service or host in the panel. Without python-gobject
+# they only count, e.g. "3 services changed state" with "Now 2 CRIT, 1 OK".
 
 set -uo pipefail
 # The status file and temporary files are for this user only
@@ -25,6 +26,9 @@ BIN="$(dirname "$(realpath "$0")")"
 STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-checkmk"
 STATUS="$STATE_DIR/status.json"
 
+# More changes than this in a single poll are announced as one summary
+MAX_NOTIFICATIONS=5
+
 notify=1
 [[ "${1:-}" == "--quiet" ]] && notify=0
 
@@ -32,7 +36,8 @@ mkdir -p "$STATE_DIR"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# Only fixed texts and counts: whatever is passed here is on a command line
+# The fallback without checkmk-notify: only fixed texts and counts, since
+# whatever is passed here is on a command line
 send_notification() { # urgency headline description panel-view
   ((notify)) || return 0
   if command -v omarchy-notification-send >/dev/null; then
@@ -266,12 +271,53 @@ jq -n --slurpfile servers "$WORK/servers.json" --slurpfile results "$WORK/result
 
 ((notify)) || exit 0
 
-# Fields are separated by the unit separator: read merges runs of tabs, which would
-# shift every field after an empty one
-SEP=$'\x1f'
+# ---- Notifications for servers that became unreachable or reachable again, and
+# for services that changed state. They name hosts and services, so they go to
+# checkmk-notify on stdin, which sends them over D-Bus. A server polled for the
+# first time announces nothing, nor does locking or unlocking one, nor a muted
+# server. Services of a server that failed are stale, not changed.
+jq -c --slurpfile prev "$PREVIOUS" --argjson max "$MAX_NOTIFICATIONS" '
+  def key: (.server // "") + "\u0000" + .host + "\u0000" + .service;
+  def name: ["OK", "WARN", "CRIT", "UNKNOWN"][.] // "?";
+  def where($multi): .host + (if $multi then " · " + .serverName else "" end);
+  $prev[0] as $prev
+  | (.servers | length > 1) as $multi
+  | [ .servers[] | select(.muted) | .id ] as $muted
+  | ($prev.servers // [] | map({key: .id, value: (if .locked then "locked" else .ok end)}) | from_entries) as $was
+  | [ .servers[] | . as $s
+      | select(($s.muted | not) and ($s.locked | not) and ($was | has($s.id)) and $was[$s.id] != "locked" and $was[$s.id] != $s.ok)
+      | if .ok then {urgency: "low", title: "Checkmk: \(.name) reachable again", body: "", target: "servers"}
+        else {urgency: "normal", title: "Checkmk: \(.name) unreachable", body: .error, target: "servers"} end
+    ] as $servers
+  | ($prev.services // [] | map(select(.stale | not) | {key: key, value: .state}) | from_entries) as $before
+  | [ .services[] | select((.handled | not) and (.stale | not)) | . as $x | select($muted | index($x.server) | not)
+      | key as $k | select(($before | has($k)) and $before[$k] != .state) | . + {before: $before[$k]} ] as $changed
+  | $servers + if ($changed | length) > $max then
+      # Too many for one each: a summary
+      [ {urgency: (if any($changed[]; .state == 2) then "critical" elif any($changed[]; .state != 0) then "normal" else "low" end),
+         title: "Checkmk: \($changed | length) services changed state",
+         body: ([ $changed[0:$max][] | "\(.state | name)  \(.service) on \(where($multi))" ] | join("\n"))
+           + "\n… and \(($changed | length) - $max) more",
+         target: "problems"} ]
+    else
+      [ $changed[]
+        | {urgency: (if .state == 2 then "critical" elif .state == 0 then "low" else "normal" end),
+           title: (if .isHost then (if .state == 2 then "DOWN" else "UNREACHABLE" end) + "  " + .host
+                   else "\(.state | name)  \(.service)" end),
+           body: (if .isHost then (if $multi then .serverName + "\n" else "" end) + .output
+                  else "\(where($multi)) (was \(.before | name))\n\(.output)" end),
+           target: (if .isHost then "host:\(.server)/\(.host)" else "service:\(.server)/\(.host)/\(.service)" end)} ]
+    end
+' "$STATUS" > "$WORK/notes.json"
+[[ "$(jq length "$WORK/notes.json" 2>/dev/null)" =~ ^[1-9] ]] || exit 0
 
-# ---- Servers that became unreachable or reachable again. A server polled for the
-# first time announces nothing, and neither does locking or unlocking one.
+python3 -I "$BIN/checkmk-notify" < "$WORK/notes.json"
+(($? == 3)) || exit 0
+
+
+# ---- Without python-gobject or a session bus: only counts, through
+# omarchy-notification-send, whose arguments every local user can read.
+# Servers that became unreachable or reachable again first.
 read -r down up < <(jq -r --slurpfile prev "$PREVIOUS" '
   $prev[0] as $prev
   | ($prev.servers // [] | map({key: .id, value: (if .locked then "locked" else .ok end)}) | from_entries) as $before

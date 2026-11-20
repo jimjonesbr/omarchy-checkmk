@@ -79,6 +79,9 @@ Panel {
   // expanded and, with a range like 4h, its graph
   function show(name) {
     name = String(name || "")
+    // A click on a notification names a token only: its command line is
+    // readable by every local user. checkmk-notify keeps what it stands for.
+    if (name.indexOf("note:") === 0) name = noteTarget(name.slice(5))
     if (name.indexOf("service:") === 0) {
       // An optional "@4h" etc. also loads the graph of that range
       var range = name.indexOf("@") > 0 ? name.slice(name.lastIndexOf("@") + 1) : ""
@@ -435,6 +438,22 @@ Panel {
   readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, "")
   property var about: ({})
   property string commit: ""
+
+  // Tokens of notifications and the views they open, from checkmk-notify
+  FileView {
+    id: notesFile
+    path: root.hostWidget ? root.hostWidget.statusPath.replace(/status\.json$/, "notes.json") : ""
+    printErrors: false
+    blockLoading: true
+  }
+
+  function noteTarget(token) {
+    notesFile.reload()
+    var notes = {}
+    try { notes = JSON.parse(notesFile.text()) || {} } catch (e) {}
+    var target = notes[token]
+    return typeof target === "string" && target !== "" ? target : "problems"
+  }
 
   FileView {
     path: root.pluginDir + "/manifest.json"

@@ -1,0 +1,112 @@
+#!/usr/bin/python3
+#
+# Send desktop notifications read as JSON from stdin.
+#
+#   checkmk-notify < notes
+#
+# reads a JSON array of {"urgency": "low|normal|critical", "title": "...",
+# "body": "...", "target": "..."}. A target is a view of the panel, as for
+# `omarchy-shell checkmk show`: "problems", "servers", "host:SERVER/HOST" or
+# "service:SERVER/HOST/SERVICE".
+#
+# Titles and bodies name hosts and services and carry check output, so they go
+# straight to the notification daemon over D-Bus: on a command line, as with
+# notify-send, every local user could read them in /proc. The same goes for the
+# click command, which the Omarchy daemon runs as given. It therefore only
+# names a random token, and the target behind the token is kept in a private
+# file for the panel to look up.
+#
+# Exit status 3 means no notification could be sent (no python-gobject or no
+# session bus), so that the caller can fall back to another way.
+
+import html
+import json
+import os
+import secrets
+import sys
+
+try:
+    import gi
+
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio, GLib
+except (ImportError, ValueError):
+    sys.exit(3)
+
+URGENCY = {"low": 0, "normal": 1, "critical": 2}
+GLYPH = "\U000f05f6"
+# Tokens of older notifications are kept for a while, so they still open their target
+KEEP_TOKENS = 100
+
+
+def notes_path():
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(cache, "omarchy-checkmk", "notes.json")
+
+
+def remember(targets):
+    """Add {token: target} to the notes file, which only this user can read."""
+    path = notes_path()
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        with open(path) as f:
+            known = json.load(f)
+        if not isinstance(known, dict):
+            known = {}
+    except (OSError, ValueError):
+        known = {}
+    known.update(targets)
+    keep = dict(list(known.items())[-KEEP_TOKENS:])
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(keep, f)
+    os.replace(tmp, path)
+
+
+def main():
+    try:
+        notes = json.load(sys.stdin)
+    except ValueError:
+        return 1
+    if not isinstance(notes, list) or not notes:
+        return 0
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    except GLib.Error:
+        return 3
+
+    targets = {}
+    calls = []
+    for note in notes:
+        if not isinstance(note, dict):
+            continue
+        token = secrets.token_hex(8)
+        targets[token] = str(note.get("target") or "problems")
+        urgency = str(note.get("urgency", "normal"))
+        hints = {
+            "urgency": GLib.Variant("y", URGENCY.get(urgency, 1)),
+            "omarchy-glyph": GLib.Variant("s", GLYPH),
+            "omarchy-exec-argv": GLib.Variant("s", json.dumps(["omarchy-shell", "checkmk", "show", "note:" + token])),
+        }
+        # The body is rendered as markup; check output must not be able to inject any
+        body = html.escape(str(note.get("body") or ""), quote=False)
+        calls.append(GLib.Variant("(susssasa{sv}i)", (
+            "Checkmk", 0, "", str(note.get("title", "")), body, [], hints, -1,
+        )))
+
+    # The targets first: a click must find its token
+    remember(targets)
+    sent = 0
+    for params in calls:
+        try:
+            bus.call_sync("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                          "org.freedesktop.Notifications", "Notify", params,
+                          None, Gio.DBusCallFlags.NONE, 5000, None)
+            sent += 1
+        except GLib.Error as e:
+            print("checkmk-notify: " + e.message, file=sys.stderr)
+    return 0 if sent or not calls else 3
+
+
+sys.exit(main())

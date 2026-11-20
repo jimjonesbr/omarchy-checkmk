@@ -5,13 +5,13 @@ A bar widget for the Omarchy shell that keeps an eye on one or more Checkmk serv
 - The bar icon takes the colour of the worst unhandled problem: amber for WARN,
   orange for UNKNOWN, red for CRIT. An unhandled CRIT also makes it pulse.
 - A popup lists hosts and problems, with service details, metrics and history graphs.
-- A desktop notification tells when services change state, e.g. "2 services
-  changed state, now 1 CRIT, 1 OK". Clicking it opens the panel with the details.
-  Notifications name no hosts, services or servers: their text is passed on
-  command lines, which every local user can read.
+- A desktop notification tells when a service changes state, with the host and
+  the check output; clicking it opens that service in the panel. More than five
+  changes at once come as one summary.
 
-Requires Checkmk 2.2 or newer, plus `curl` and `jq`, and `keyutils` or
-`secret-tool` to keep the secret.
+Requires Checkmk 2.2 or newer, plus `curl`, `jq` and `python-gobject` (all part
+of Omarchy), and `keyutils` or `secret-tool` to keep the secret. Without
+`python-gobject`, notifications only count the changes.
 
 > **Beta.** This is still under development and not yet ready for production use.
 > Expect rough edges, and please report them in the [issues](https://github.com/jimjonesbr/omarchy-checkmk/issues).
