@@ -3,7 +3,7 @@
 Versions follow [semantic versioning](https://semver.org); during the beta they
 carry a `-beta.N` suffix.
 
-## Unreleased
+## 0.5.0-beta.3 (2026-11-22)
 
 ### Security
 
