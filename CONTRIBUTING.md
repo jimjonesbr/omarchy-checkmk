@@ -13,9 +13,14 @@ starts a throwaway one in a [podman](https://podman.io) container, filled with
 fake hosts. Nothing has to be installed besides podman.
 
 ```bash
-deploy-checkmk/checkmk.sh up       # start it: http://localhost:8080/cmk/ (cmkadmin/cmkadmin)
+deploy-checkmk/checkmk.sh up       # start it: http://localhost:8080/cmk/
 deploy-checkmk/lab-hosts.sh sync   # add the fake hosts from deploy-checkmk/fixtures/
 ```
+
+It only listens on this machine. The web UI's user is `cmkadmin`, with a random
+password that `deploy-checkmk/checkmk.sh password` prints. An instance created
+before 0.5.0-beta.3 still listens on every network interface with the password
+`cmkadmin`: `deploy-checkmk/checkmk.sh purge` and `up` again replace it.
 
 To connect the widget, use the URL above, the user `omarchy` and the secret
 printed by `deploy-checkmk/checkmk.sh secret`.
@@ -45,9 +50,9 @@ After changing the code, run `omarchy-restart-shell` to reload the widget.
 
 ## Tests
 
-The logic of the panel (`Model.js`) and the rules for notifications
-(`lib/notifications.jq`) have tests. They need [Node.js](https://nodejs.org)
-and `jq`, but no Checkmk:
+The logic of the panel (`Model.js`), the rules for notifications
+(`lib/notifications.jq`) and the checks of the helpers in `bin/` have tests.
+They need [Node.js](https://nodejs.org), `curl` and `jq`, but no Checkmk:
 
 ```bash
 node --test tests/

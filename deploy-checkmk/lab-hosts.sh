@@ -18,7 +18,6 @@
 set -euo pipefail
 
 CMK_SITE="${CMK_SITE:-cmk}"
-CMK_PASSWORD="${CMK_PASSWORD:-cmkadmin}"
 CMK_WEB_PORT="${CMK_WEB_PORT:-8080}"
 
 CMK_LAB="${CMK_LAB:-}"
@@ -27,10 +26,20 @@ FOLDER="lab"
 FIXTURES="$(dirname "$(realpath "$0")")/fixtures${CMK_LAB:+-$CMK_LAB}"
 API="http://localhost:$CMK_WEB_PORT/$CMK_SITE/check_mk/api/1.0"
 RULE_DESCRIPTION="Lab: agent output from fixture files"
+ADMIN_FILE="$(dirname "$(realpath "$0")")/cmkadmin${CMK_LAB:+-$CMK_LAB}.secret"
+
+# The administrator password, as checkmk.sh sets it up
+admin_password() {
+  if [[ -n "${CMK_PASSWORD:-}" ]]; then printf '%s' "$CMK_PASSWORD"
+  elif [[ -s "$ADMIN_FILE" ]]; then tr -d '\n' < "$ADMIN_FILE"
+  else printf cmkadmin
+  fi
+}
 
 api() { # method path [json]
+  # The password goes to curl through a file descriptor, not on its command line
   curl -sf -X "$1" \
-    -H "Authorization: Bearer cmkadmin $CMK_PASSWORD" \
+    -H @<(printf 'Authorization: Bearer cmkadmin %s\n' "$(admin_password)") \
     -H "Accept: application/json" \
     -H "Content-Type: application/json" \
     -H "If-Match: *" \

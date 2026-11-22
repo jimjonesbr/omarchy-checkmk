@@ -3,6 +3,27 @@
 Versions follow [semantic versioning](https://semver.org); during the beta they
 carry a `-beta.N` suffix.
 
+## Unreleased
+
+### Security
+
+- Editing a server with the password left empty reused its stored secret even
+  when the URL or user had changed, and sent it to the new address with *Test
+  connection* or *Save*. A stored secret now only goes to its own site and user;
+  for another one the password has to be entered.
+- After a change of URL, a server that did not answer kept the old site's
+  services, and `g` on one of them asked the new site for its history, sending
+  it the old host, service and metric names. Those services are now dropped,
+  `g` asks for no history of a stale service, and checkmk-graph refuses a
+  service whose link is not below the server's current URL.
+- A `servers.json` with a syntax error was taken for an empty one, and saving a
+  server replaced it, losing every other server. Now nothing runs until it is
+  fixed, and the panel says why.
+- The developer lab (`deploy-checkmk/`) published its ports on every network
+  interface, with the well-known administrator password `cmkadmin`. It now
+  listens on this machine only, a new instance gets a random password, and its
+  scripts pass passwords to curl through file descriptors.
+
 ## 0.5.0-beta.2 (2026-11-22)
 
 ### Security
