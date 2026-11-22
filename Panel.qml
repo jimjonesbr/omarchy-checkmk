@@ -82,6 +82,10 @@ Panel {
     // A click on a notification names a token only: its command line is
     // readable by every local user. checkmk-notify keeps what it stands for.
     if (name.indexOf("note:") === 0) name = noteTarget(name.slice(5))
+    // Open first: opening may ask for a password, and the view asked for here
+    // comes after that. Without any server, the form to add one stays.
+    if (!opened) open()
+    if (unconfigured) return
     if (name.indexOf("service:") === 0) {
       // An optional "@4h" etc. also loads the graph of that range
       var range = name.indexOf("@") > 0 ? name.slice(name.lastIndexOf("@") + 1) : ""
@@ -111,7 +115,6 @@ Panel {
     } else if (name === "unlock" && lockedServers.length > 0) {
       showUnlock(lockedServers[0].id)
     }
-    if (!opened) open()
   }
 
   function switchPanel(direction) {

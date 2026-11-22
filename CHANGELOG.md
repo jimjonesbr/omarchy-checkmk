@@ -27,6 +27,11 @@ carry a `-beta.N` suffix.
   running, the server form now says so.
 - Tests of the config helper's checks (`tests/config.test.js`).
 
+### Fixed
+
+- `omarchy-shell checkmk show …` and a click on a notification opened the
+  password prompt instead of the view asked for while a server was locked.
+
 ### Removed
 
 - The number of problems next to the bar icon, and its `showCount` setting: at
