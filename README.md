@@ -48,6 +48,7 @@ Forget the stored secrets first, then remove the plugin and its settings:
 
 ```bash
 ~/.config/omarchy/plugins/jimjonesbr.checkmk/bin/checkmk-config lock
+secret-tool clear application omarchy-checkmk   # any keyring entries left over
 omarchy plugin remove jimjonesbr.checkmk
 rm -rf ~/.config/omarchy-checkmk ~/.cache/omarchy-checkmk
 ```
@@ -122,14 +123,20 @@ with `ssh -D 1080 jumphost`, and under *Advanced* in the server form set
 up host names through the tunnel (`socks5h://`); use `http://host:port` for an
 HTTP proxy. The widget does not open the tunnel itself; while it is down, the
 server shows a connection error. Links to Checkmk open in the default browser,
-which needs its own way through the tunnel, e.g. a proxy or PAC setting.
+which needs its own way through the tunnel, e.g. a proxy or PAC setting. A
+password in the proxy address (`socks5h://user:password@host:port`) is saved
+in `servers.json` as it is: prefer a proxy without one, such as an SSH tunnel.
 
-By default the password is never saved: the widget asks for it after each login
-and keeps it in kernel memory only, for 8 hours (`sessionHours`). With *Remember
-password* it goes to the desktop keyring for 30 days (`rememberDays`). Anything
-running in your session can read it there, and with autologin the keyring is a
-plain file, so only remember the password of a read-only account. Either way,
-`lock` in the server list forgets it right away.
+By default the password is never saved: the widget asks for it and keeps it in
+kernel memory only, for 8 hours (`sessionHours`). A reboot always clears it; a
+logout usually does, but programs that keep running after it keep it alive for
+the rest of the 8 hours. With *Remember password* it goes to the desktop
+keyring for 30 days (`rememberDays`), or, where no keyring is running, to a
+file only you can read; the server form says which. Anything running in your
+session can read it there, and with autologin the keyring is a plain file, so
+only remember the password of a read-only account. Either way, `lock` in the
+server list forgets it right away; *Disconnect* forgets a password kept in
+memory.
 
 ## Development
 
