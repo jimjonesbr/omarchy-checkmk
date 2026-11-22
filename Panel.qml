@@ -1758,7 +1758,7 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: (root.about.name || "Checkmk") + " " + (root.about.version || "")
+              text: (root.about.name || "Checkmk for Omarchy") + " " + (root.about.version || "")
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -1824,6 +1824,17 @@ Panel {
                   }
                 }
               }
+            }
+
+            Text {
+              width: parent.width
+              topPadding: Style.space(8)
+              wrapMode: Text.Wrap
+              textFormat: Text.PlainText
+              text: "Checkmk is a trademark of Checkmk GmbH. This plugin is not affiliated with or endorsed by Checkmk GmbH."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
             }
           }
 

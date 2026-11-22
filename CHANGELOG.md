@@ -19,6 +19,10 @@ carry a `-beta.N` suffix.
 
 ### Changed
 
+- The plugin is called *Checkmk for Omarchy* (in the bar editor *Checkmk
+  monitor*), so that it reads as a companion to Checkmk rather than Checkmk
+  itself. The README and the about page say that it is not affiliated with
+  Checkmk GmbH.
 - When a remembered password goes to a file because no desktop keyring is
   running, the server form now says so.
 - Tests of the config helper's checks (`tests/config.test.js`).

@@ -41,9 +41,9 @@ trap 'rm -rf "$WORK"' EXIT
 send_notification() { # urgency headline description panel-view
   ((notify)) || return 0
   if command -v omarchy-notification-send >/dev/null; then
-    omarchy-notification-send --app-name Checkmk -g "󰗶" -u "$1" "$2" "$3" --exec omarchy-shell checkmk show "$4"
+    omarchy-notification-send --app-name "Checkmk for Omarchy" -g "󰗶" -u "$1" "$2" "$3" --exec omarchy-shell checkmk show "$4"
   else
-    notify-send -a Checkmk -u "$1" "$2" "$3"
+    notify-send -a "Checkmk for Omarchy" -u "$1" "$2" "$3"
   fi
 }
 

@@ -142,3 +142,8 @@ memory.
 
 Want to work on the plugin? [CONTRIBUTING.md](CONTRIBUTING.md) explains how to
 run a test Checkmk on your machine and how releases are made.
+
+## Trademark
+
+Checkmk is a trademark of Checkmk GmbH. This plugin is not affiliated with or
+endorsed by Checkmk GmbH.
