@@ -265,6 +265,9 @@ Panel {
 
   // Picking the shown range again hides the graph, unless keep is set
   function showGraph(row, range, keep) {
+    // A stale service is the last known state of a server that did not answer:
+    // its history is not asked for
+    if (!row || row.stale) return
     var key = rowKey(row)
     if (graph.key === key && graph.range === range && (graph.loading || keep)) return
     if (graph.key === key && graph.range === range) {
@@ -282,7 +285,7 @@ Panel {
     graph = { key: key, range: range, loading: true, error: "", data: null }
     graphProc.running = false
     graphProc.command = [hostWidget.graphTool]
-    graphProc.input = JSON.stringify({ server: row.server, host: row.host, service: row.service,
+    graphProc.input = JSON.stringify({ server: row.server, host: row.host, service: row.service, link: row.link,
       seconds: seconds, metrics: row.metrics.map(function(m) { return m.name }) })
     graphProc.running = true
   }
@@ -306,7 +309,7 @@ Panel {
   // g: no graph -> 4h -> 25h -> 1w -> 1m -> no graph
   function cycleGraph() {
     var row = rows[cursor]
-    if (!row || view === "hosts" || settingsView || !row.metrics || row.metrics.length === 0) return
+    if (!row || row.stale || view === "hosts" || settingsView || !row.metrics || row.metrics.length === 0) return
     var key = rowKey(row)
     expanded = key
     var index = graph.key === key ? graphRanges.map(function(r) { return r.id }).indexOf(graph.range) : -1
@@ -481,7 +484,10 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        try { root.configured = JSON.parse(text) } catch (e) { root.configured = [] }
+        var list = []
+        try { list = JSON.parse(text) } catch (e) {}
+        // An error, e.g. a servers.json that cannot be read, is not a list
+        root.configured = Array.isArray(list) ? list : []
       }
     }
   }
@@ -984,6 +990,18 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
             }
+          }
+
+          // ---- The server list cannot be read: nothing works until it is fixed
+          Text {
+            visible: !!root.status && root.status.configError === true
+            width: column.width
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: root.status && root.status.error ? root.status.error : ""
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
           }
 
           // ---- Servers that did not answer, their data is the last known

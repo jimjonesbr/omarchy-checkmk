@@ -80,6 +80,7 @@ function problems(services, includeHandled) {
 function summary(status) {
   if (!status) return "Checkmk: no data yet"
   if (status.disconnected) return "Checkmk: all servers disconnected"
+  if (status.configError) return "Checkmk: " + status.error
   var c = status.counts || {}
   var parts = []
   if (c.crit) parts.push(c.crit + " CRIT")

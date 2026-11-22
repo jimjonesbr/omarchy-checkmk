@@ -19,7 +19,8 @@
 #   {"id": "", "name": "Production", "url": "...", "user": "...", "secret": "...",
 #    "serviceFilter": "", "hostFilter": "", "insecure": false, "remember": false,
 #    "proxy": "", "muted": false}
-# An empty id adds a server, an empty secret keeps the stored one. Without
+# An empty id adds a server, an empty secret keeps the stored one as long as URL
+# and user stay the same; for another URL or user it has to be entered. Without
 # "remember", a new server does not remember its secret and an existing one keeps
 # its choice. A "muted" server sends no notifications. Saving keeps whether a
 # server is "disconnected"; only disconnect and connect change that, so that a
@@ -415,10 +416,24 @@ read_input() {
     | if .remember != null then .remember == true
     elif $e != null then $e.remember != false
     else false end' <<<"$line")"
-  # An empty secret keeps the stored one, as long as url and user are unchanged
+  # An empty secret keeps the stored one, but only for the same site and user:
+  # the secret of one site must never go to another, not even for a test
+  IN_SITE_CHANGED=false
   if [[ -z "$IN_SECRET" && -n "$EXISTING" ]]; then
-    IN_SECRET="$(secret_of "$(J_U="$IN_URL" J_N="$IN_USER" jq -c '. + {url: $ENV.J_U, user: $ENV.J_N}' <<<"$EXISTING")")"
-    [[ -z "$IN_SECRET" ]] && IN_SECRET="$(secret_of "$EXISTING")"
+    if [[ "$IN_URL" == "$(jq -r .url <<<"$EXISTING")" && "$IN_USER" == "$(jq -r .user <<<"$EXISTING")" ]]; then
+      IN_SECRET="$(secret_of "$EXISTING")"
+    else
+      IN_SITE_CHANGED=true
+    fi
+  fi
+}
+
+# For an empty secret: why it has to be entered
+missing_secret() {
+  if [[ "${IN_SITE_CHANGED:-false}" == true ]]; then
+    result false "Enter the password or secret: the URL or user changed, and a stored one only goes to its own site"
+  else
+    result false "The password or secret is missing"
   fi
 }
 
@@ -461,7 +476,7 @@ check_input() {
 check_connection() {
   [[ -n "$IN_URL" ]] || { result false "The URL is missing"; return 1; }
   [[ -n "$IN_USER" ]] || { result false "The user name is missing"; return 1; }
-  [[ -n "$IN_SECRET" ]] || { result false "The password or secret is missing"; return 1; }
+  [[ -n "$IN_SECRET" ]] || { missing_secret; return 1; }
   check_input || return 1
 
   local args=(-sS --max-time 10 -w '\n%{http_code}' -H "Accept: application/json")
@@ -494,8 +509,8 @@ check_connection() {
 
 save() {
   read_input
-  [[ -n "$IN_URL" && -n "$IN_USER" && -n "$IN_SECRET" ]] ||
-    { result false "URL, user name and password or secret are required"; return 1; }
+  [[ -n "$IN_URL" && -n "$IN_USER" ]] || { result false "URL and user name are required"; return 1; }
+  [[ -n "$IN_SECRET" ]] || { missing_secret; return 1; }
   check_input || return 1
   [[ -n "$IN_ID" && -z "$EXISTING" ]] && { result false "Unknown server $IN_ID"; return 1; }
 
@@ -644,6 +659,21 @@ lock() { # [id]
   result true "Locked"
 }
 
+# A servers.json that cannot be read is never taken for an empty one: the next
+# save would replace it, and every server in it with it. Nothing runs until it
+# is fixed.
+check_servers_file() {
+  [[ -e "$SERVERS" ]] || return 0
+  local error
+  error="$(jq -e '(.servers // []) | type == "array"' "$SERVERS" 2>&1 >/dev/null)" && return 0
+  error="$(head -1 <<<"$error" | sed 's/^jq: //')"
+  error="$SERVERS cannot be read (${error:-it holds no list of servers}). Fix it, or move it away to start over; until then nothing is changed."
+  # The secret command's output is taken for a secret: the message goes elsewhere
+  if [[ "${1:-}" == secret ]]; then echo "$error" >&2; else result false "$error"; fi
+  return 1
+}
+
+check_servers_file "${1:-}" || exit 1
 migrate_legacy
 migrate_keyring
 expire_secrets

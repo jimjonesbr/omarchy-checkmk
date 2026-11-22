@@ -5,8 +5,10 @@
 #   checkmk-graph < request
 #
 # reads one line of JSON from stdin:
-#   {"server": "<server-id>", "host": "...", "service": "...", "seconds": 14400,
-#    "metrics": ["load1", ...]}
+#   {"server": "<server-id>", "host": "...", "service": "...", "link": "...",
+#    "seconds": 14400, "metrics": ["load1", ...]}
+# The link is the service's link into Checkmk: it must lie below the server's
+# URL, so that names of one site are never sent to another.
 #
 # Prints JSON: {ok, error, start, end, step, curves: [{metric, title, color, points}]}
 # with start and end in epoch seconds and one point every step seconds, null for gaps.
@@ -47,6 +49,9 @@ id="$(jq -r .server "$work/request.json")"
 "$BIN/checkmk-config" list | jq -c --arg id "$id" '.[] | select(.id == $id)' > "$work/server.json"
 [[ -s "$work/server.json" ]] || fail "Unknown server $id"
 url="$(jq -r .url "$work/server.json")"
+jq -e --slurpfile server "$work/server.json" '
+  .link as $link | $server[0].url as $url | ($link | type == "string") and ($link | startswith($url + "/"))
+' "$work/request.json" >/dev/null 2>&1 || fail "This service is not from the server's current site"
 user="$(jq -r .user "$work/server.json")"
 secret="$("$BIN/checkmk-config" secret "$id")"
 [[ -n "$secret" ]] || fail "No password or secret stored for this server"

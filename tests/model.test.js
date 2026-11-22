@@ -77,6 +77,8 @@ test("problems leave out OK services, and handled ones unless asked for", () => 
 test("summary names the problems, unreachable and locked servers", () => {
   assert.equal(M.summary(null), "Checkmk: no data yet")
   assert.equal(M.summary(M.parseStatus('{"disconnected": true}')), "Checkmk: all servers disconnected")
+  assert.equal(M.summary(M.parseStatus('{"configError": true, "error": "servers.json cannot be read"}')),
+    "Checkmk: servers.json cannot be read")
   const ok = M.parseStatus('{"reachable": true, "counts": {"ok": 7}, "servers": [{"name": "A", "ok": true}]}')
   assert.equal(M.summary(ok), "All 7 services OK")
   const bad = M.parseStatus(JSON.stringify({ reachable: true, counts: { crit: 2, warn: 1 },

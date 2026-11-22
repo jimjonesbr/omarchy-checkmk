@@ -185,15 +185,25 @@ fetch() { # server json
   ' <<<"$body" > "$out" 2>/dev/null || failed "Unexpected answer from $url"
 }
 
-servers="$("$BIN/checkmk-config" list)" || servers="[]"
 # Large JSON goes to jq in files: as an argument, a site with thousands of
 # services exceeds the size limit of the command line
 PREVIOUS="$WORK/previous.json"
 jq -e . "$STATUS" > "$PREVIOUS" 2>/dev/null || echo '{}' > "$PREVIOUS"
 
 write_status() {
-  cat > "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+  local tmp
+  tmp="$(mktemp "$STATUS.XXXXXX")" && cat > "$tmp" && mv "$tmp" "$STATUS"
 }
+
+# The servers; when servers.json cannot be read, the panel says why
+if ! servers="$("$BIN/checkmk-config" list)" || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$servers"; then
+  CMK_ERROR="$(jq -r '.message // empty' <<<"$servers" 2>/dev/null)" jq -n '
+    {ok: false, reachable: false, unconfigured: false, configError: true, checked: now | floor,
+     error: ($ENV.CMK_ERROR | if . == "" then "The server list cannot be read" else . end),
+     servers: [], hosts: [], services: [], counts: {ok: 0, warn: 0, crit: 0, unknown: 0, unhandled: 0}, worst: 0}' |
+    write_status
+  exit 0
+fi
 
 if [[ "$(jq length <<<"$servers")" == 0 ]]; then
   jq -n '{ok: false, error: "No Checkmk server configured", unconfigured: true, checked: now | floor,
@@ -232,10 +242,14 @@ jq -n --slurpfile servers "$WORK/servers.json" --slurpfile results "$WORK/result
   def count($state): map(select(.state == $state)) | length;
   def start($url; $view): $url + "/check_mk/index.py?start_url=" + ($view | @uri);
 
+  # Last known services only stay for the same site: after a change of URL they
+  # belong to another one, and nothing of them may go to the new one
   [ $servers[] | . as $s | $results[$s.id] as $r
+    | ([ ($previous.servers // [])[] | select(.id == $s.id) ][0].url == $s.url) as $sameSite
     | {id, name, url, muted: ($s.muted == true), ok: $r.ok, locked: ($r.locked // false), error: $r.error,
        services: (if $r.ok then $r.services
-                  else [ ($previous.services // [])[] | select(.server == $s.id) | . + {stale: true} ] end)}
+                  elif $sameSite then [ ($previous.services // [])[] | select(.server == $s.id) | . + {stale: true} ]
+                  else [] end)}
   ] as $polled
   | ([ $polled[].services[] ] | sort_by(-(.state | severity), (.isHost | not), .serverName, .host, .service)) as $services
   | ($polled | map(select(.ok | not))) as $failed

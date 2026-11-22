@@ -118,3 +118,44 @@ test("many runs at once leave servers.json whole", async () => {
   assert.deepEqual(servers(dir).map(s => s.id), ["a", "b"])
   assert.deepEqual(fs.readdirSync(dir).filter(f => f.startsWith("servers.json.")), [], "temporary files left")
 })
+
+// A server whose secret is read from a file of its own, as the test instance's
+function withServer(dir, fields = {}) {
+  const secretFile = path.join(dir, "secret")
+  fs.writeFileSync(secretFile, "s3cret\n")
+  fs.writeFileSync(path.join(dir, "servers.json"), JSON.stringify({ servers: [{
+    id: "a", name: "A", url: CLOSED, user: "u", serviceFilter: "", hostFilter: "", insecure: false,
+    remember: true, secretFile, ...fields }] }))
+}
+
+test("an empty secret is reused for the same site and user only", () => {
+  const dir = configDir()
+  withServer(dir)
+  const same = run(dir, ["test"], JSON.stringify({ id: "a", url: CLOSED, user: "u", secret: "" }))
+  assert.doesNotMatch(same.message, /password or secret/)
+  for (const edit of [{ url: "http://127.0.0.1:9/other" }, { user: "someone-else" }]) {
+    for (const action of ["test", "save"]) {
+      const r = run(dir, [action], JSON.stringify({ id: "a", url: CLOSED, user: "u", secret: "", ...edit }))
+      assert.equal(r.ok, false)
+      assert.match(r.message, /URL or user changed/)
+    }
+  }
+  assert.equal(servers(dir)[0].url, CLOSED, "the server was changed")
+})
+
+test("a servers.json that cannot be read is left alone", () => {
+  const dir = configDir()
+  const broken = '{"servers": [ {"id": "a", "name": "A", "url": "https://a.example/x", "user": "u"}, ]}\n'
+  fs.writeFileSync(path.join(dir, "servers.json"), broken)
+  const list = run(dir, ["list"])
+  assert.equal(list.ok, false)
+  assert.match(list.message, /cannot be read/)
+  const save = run(dir, ["save"], JSON.stringify({ url: "https://b.example/y", user: "u", secret: "s", remember: false }))
+  assert.equal(save.ok, false)
+  assert.equal(fs.readFileSync(path.join(dir, "servers.json"), "utf8"), broken)
+  // The poller takes this output for a secret: the message must not end up there
+  const secret = spawnSync(SCRIPT, ["secret", "a"], { encoding: "utf8", env: { ...process.env, CHECKMK_CONFIG_DIR: dir } })
+  assert.equal(secret.stdout, "")
+  assert.match(secret.stderr, /cannot be read/)
+  assert.notEqual(secret.status, 0)
+})
