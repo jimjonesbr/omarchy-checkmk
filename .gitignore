@@ -1,4 +1,1 @@
 *.secret
-
-# Internal checks of the database VMs, kept locally for reference only
-local-plugins/
