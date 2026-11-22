@@ -3,6 +3,14 @@
 Versions follow [semantic versioning](https://semver.org); during the beta they
 carry a `-beta.N` suffix.
 
+## Unreleased
+
+### Removed
+
+- The number of problems next to the bar icon, and its `showCount` setting: at
+  a size that fits the bar it is hard to read on some screens, and larger
+  counts do not fit. The icon's colour, the tooltip and the panel tell the same.
+
 ## 0.5.0-beta.1 (2026-11-20)
 
 ### Added

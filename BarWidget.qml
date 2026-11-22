@@ -20,7 +20,6 @@ BarWidget {
   // Any Nerd Font glyph, the default is nf-md-heart_pulse
   readonly property string icon: setting("icon", "\u{f05f6}") || "\u{f05f6}"
   readonly property bool pulseOnCrit: setting("pulseOnCrit", true) !== false
-  readonly property bool showCount: setting("showCount", true) !== false
 
   // Last status written by bin/checkmk-poll, shared by every bar instance through the file
   property var status: null
@@ -33,10 +32,6 @@ BarWidget {
   readonly property color stateColor: Model.stateColor(worst, bar ? bar.barForeground : Color.foreground)
   // An unhandled CRIT makes the icon pulse; acknowledged problems and downtimes never count
   readonly property bool pulsing: pulseOnCrit && reachable && worst === 2
-  // The number of unhandled problems next to the icon, the ones that colour it.
-  // Not on a vertical bar, where it would not fit beside the icon.
-  readonly property string countText: showCount && reachable && !button.vertical
-    && status.counts && status.counts.unhandled > 0 ? String(status.counts.unhandled) : ""
 
   // There is one bar per monitor, but only the first instance polls, so every
   // state change is notified once
@@ -159,9 +154,7 @@ BarWidget {
       foreground: root.stateColor
       useActiveColor: false
       dimmed: !root.reachable
-      labelText: root.countText
-      // The slot has a fixed width: it grows by the count
-      slotSize: Style.bar.statusSlot + (root.countText !== "" ? countMetrics.advanceWidth + Style.space(4) : 0)
+      slotSize: Style.bar.statusSlot
       tooltipText: root.opened ? "" : root.unconfigured ? "Checkmk: click to set up the connection" : Model.summary(root.status)
 
       onPressed: function(b) {
@@ -169,13 +162,6 @@ BarWidget {
         else if (b === Qt.MiddleButton) root.refresh()
         else root.toggle()
       }
-    }
-
-    TextMetrics {
-      id: countMetrics
-      font.family: button.fontFamily
-      font.pixelSize: button.fontSize
-      text: root.countText
     }
 
     SequentialAnimation on opacity {

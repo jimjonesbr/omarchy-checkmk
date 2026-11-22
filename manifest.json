@@ -23,7 +23,6 @@
       "refreshIntervalSec": 60,
       "notifications": true,
       "pulseOnCrit": true,
-      "showCount": true,
       "icon": "󰗶"
     },
     "schema": [
@@ -46,12 +45,6 @@
         "key": "pulseOnCrit",
         "type": "boolean",
         "label": "Pulse the icon on unhandled CRIT",
-        "defaultValue": true
-      },
-      {
-        "key": "showCount",
-        "type": "boolean",
-        "label": "Show the number of problems next to the icon",
         "defaultValue": true
       },
       {
