@@ -26,10 +26,13 @@ fail() {
   exit 1
 }
 
-# One line of a curl config: the value quoted, with \ and " escaped
+# One line of a curl config: the value quoted, with \ and " escaped and line
+# breaks encoded, so that no value can start an option line of its own
 curl_option() { # name value
   local v="${2//\\/\\\\}"
-  printf '%s = "%s"\n' "$1" "${v//\"/\\\"}"
+  v="${v//\"/\\\"}"
+  v="${v//$'\n'/\\n}"
+  printf '%s = "%s"\n' "$1" "${v//$'\r'/\\r}"
 }
 
 work="$(mktemp -d)"
@@ -54,7 +57,8 @@ start="$(date -u -d "-$seconds seconds" +%Y-%m-%dT%H:%M:%SZ)"
 
 args=(-sS --max-time 20 -w '%{http_code}' -H "Accept: application/json" -H "Content-Type: application/json")
 [[ "$(jq -r '.insecure // false' "$work/server.json")" == true ]] && args+=(-k)
-config="$(curl_option url "$url/check_mk/api/1.0/domain-types/metric/actions/get/invoke")"
+# Only the web: never a file:// or other URL curl would also take
+config='proto = "=http,https"'$'\n'"$(curl_option url "$url/check_mk/api/1.0/domain-types/metric/actions/get/invoke")"
 proxy="$(jq -r '.proxy // ""' "$work/server.json")"
 [[ -n "$proxy" ]] && config+=$'\n'"$(curl_option proxy "$proxy")"
 

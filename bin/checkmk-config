@@ -64,13 +64,22 @@ REMEMBER_DAYS=30
 # Single server configuration of earlier versions, migrated on first use
 LEGACY="$DIR/config"
 
+# One run at a time: the poller, the graphs and the panel all call this, and
+# two runs writing servers.json at once could leave half of one in it
+mkdir -p "$DIR"
+if command -v flock >/dev/null; then
+  exec 9>"$DIR/.lock"
+  flock -w 30 9 || { echo '{"ok": false, "message": "Another change to the servers is still running"}'; exit 1; }
+fi
+
 servers() {
   jq -c '.servers // []' "$SERVERS" 2>/dev/null || echo '[]'
 }
 
 write_servers() { # json array on stdin
-  mkdir -p "$DIR"
-  jq '{servers: .}' > "$SERVERS.tmp" && mv "$SERVERS.tmp" "$SERVERS"
+  local tmp
+  tmp="$(mktemp "$SERVERS.XXXXXX")" || return 1
+  if jq '{servers: .}' > "$tmp"; then mv "$tmp" "$SERVERS"; else rm -f "$tmp"; return 1; fi
 }
 
 server() { # id
@@ -114,7 +123,8 @@ keyring_available() {
 keyring_key() { # url user
   if [[ ! -s "$SALT" ]]; then
     mkdir -p "$DIR"
-    head -c 32 /dev/urandom | base64 > "$SALT.tmp" && mv "$SALT.tmp" "$SALT"
+    local tmp
+    tmp="$(mktemp "$SALT.XXXXXX")" && head -c 32 /dev/urandom | base64 > "$tmp" && mv "$tmp" "$SALT"
   fi
   { cat "$SALT"; printf '%s\n%s' "$1" "$2"; } | sha256sum | cut -d' ' -f1
 }
@@ -277,13 +287,31 @@ expire_secrets() {
   done < <(servers | jq -c '.[] | select(.remember != false and (.secretFile // "") == "")')
 }
 
+# The value of NAME="value" in the config of 0.2.0, read as text: the file is
+# never run, so nothing written into it can execute
+legacy_value() { # name
+  local line value
+  line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$1=" "$LEGACY" | tail -1)"
+  value="${line#*=}"
+  if [[ "$value" =~ ^\"(.*)\"[[:space:]]*$ || "$value" =~ ^\'(.*)\'[[:space:]]*$ ]]; then
+    value="${BASH_REMATCH[1]}"
+  fi
+  printf '%s' "$value"
+}
+
 migrate_legacy() {
   [[ -r "$LEGACY" && ! -e "$SERVERS" ]] || return 0
 
-  local CMK_URL="" CMK_USER="" CMK_SECRET="" CMK_SECRET_FILE="" CMK_SERVICE_FILTER="" CMK_HOST_FILTER="" CMK_INSECURE=0 CMK_TIMEOUT=""
-  # shellcheck source=/dev/null
-  source "$LEGACY"
-  CMK_URL="$(normalize_url "$CMK_URL")"
+  local CMK_URL CMK_USER CMK_SECRET CMK_SECRET_FILE CMK_SERVICE_FILTER CMK_HOST_FILTER CMK_INSECURE CMK_TIMEOUT
+  CMK_URL="$(normalize_url "$(legacy_value CMK_URL)")"
+  CMK_USER="$(legacy_value CMK_USER)"
+  CMK_SECRET="$(legacy_value CMK_SECRET)"
+  CMK_SECRET_FILE="$(legacy_value CMK_SECRET_FILE)"
+  CMK_SERVICE_FILTER="$(legacy_value CMK_SERVICE_FILTER)"
+  CMK_HOST_FILTER="$(legacy_value CMK_HOST_FILTER)"
+  CMK_INSECURE="$(legacy_value CMK_INSECURE)"
+  CMK_TIMEOUT="$(legacy_value CMK_TIMEOUT)"
+  [[ "$CMK_TIMEOUT" =~ ^[0-9]+$ ]] || CMK_TIMEOUT=""
 
   local id
   id="$(new_id "$(name_from_url "$CMK_URL")")"
@@ -339,16 +367,20 @@ valid_proxy() { # proxy
   [[ -z "$1" || "$1" =~ ^(socks5h|socks5|socks4a|socks4|http|https)://[^[:space:]/]+/?$ ]]
 }
 
-# One line of a curl config: the value quoted, with \ and " escaped
+# One line of a curl config: the value quoted, with \ and " escaped and line
+# breaks encoded, so that no value can start an option line of its own
 curl_option() { # name value
   local v="${2//\\/\\\\}"
-  printf '%s = "%s"\n' "$1" "${v//\"/\\\"}"
+  v="${v//\"/\\\"}"
+  v="${v//$'\n'/\\n}"
+  printf '%s = "%s"\n' "$1" "${v//$'\r'/\\r}"
 }
 
 # curl config for a request to IN_URL with IN_INSECURE and IN_PROXY. It goes to
 # curl with -K through a file descriptor: on the command line every local user
 # could read the site URL in /proc.
 connection_config() { # path below the site URL
+  echo 'proto = "=http,https"'
   curl_option url "$IN_URL$1"
   [[ "$IN_INSECURE" == true ]] && echo insecure
   [[ -n "$IN_PROXY" ]] && curl_option proxy "$IN_PROXY"
@@ -414,13 +446,23 @@ test_connection() {
   check_connection
 }
 
+# The input that may reach curl: a URL of the web, and a user name and secret on
+# one line each, since they go into a header
+check_input() {
+  [[ "$IN_URL" =~ ^https?://[^[:space:]]+$ ]] ||
+    { result false "The URL must start with https:// (or http://)"; return 1; }
+  valid_proxy "$IN_PROXY" ||
+    { result false "The proxy must look like socks5h://127.0.0.1:1080 or http://proxy:3128"; return 1; }
+  [[ "$IN_USER$IN_SECRET" != *[$'\r\n']* ]] ||
+    { result false "The user name and the password or secret must not contain line breaks"; return 1; }
+}
+
 # Tests IN_URL, IN_USER, IN_SECRET, IN_INSECURE and IN_PROXY and prints the result
 check_connection() {
   [[ -n "$IN_URL" ]] || { result false "The URL is missing"; return 1; }
-  valid_proxy "$IN_PROXY" ||
-    { result false "The proxy must look like socks5h://127.0.0.1:1080 or http://proxy:3128"; return 1; }
   [[ -n "$IN_USER" ]] || { result false "The user name is missing"; return 1; }
   [[ -n "$IN_SECRET" ]] || { result false "The password or secret is missing"; return 1; }
+  check_input || return 1
 
   local args=(-sS --max-time 10 -w '\n%{http_code}' -H "Accept: application/json")
 
@@ -454,8 +496,7 @@ save() {
   read_input
   [[ -n "$IN_URL" && -n "$IN_USER" && -n "$IN_SECRET" ]] ||
     { result false "URL, user name and password or secret are required"; return 1; }
-  valid_proxy "$IN_PROXY" ||
-    { result false "The proxy must look like socks5h://127.0.0.1:1080 or http://proxy:3128"; return 1; }
+  check_input || return 1
   [[ -n "$IN_ID" && -z "$EXISTING" ]] && { result false "Unknown server $IN_ID"; return 1; }
 
   local name="${IN_NAME:-$(name_from_url "$IN_URL")}" id="$IN_ID" old_url="" old_user="" store
@@ -518,7 +559,7 @@ save() {
   case "$store" in
     keyring) where="password remembered for $days days" ;;
     session) where="password kept in memory for $hours hours, never saved" ;;
-    *) where="password saved for $days days" ;;
+    *) where="password saved for $days days in a file only you can read: there is no desktop keyring" ;;
   esac
   [[ -n "$secret_file" ]] && where="password read from $secret_file"
   result true "Saved $name, $where" \
@@ -579,9 +620,14 @@ unlock() { # id, secret as JSON on stdin
   else
     local days
     days="$(remember_days "$existing")"
-    store_secret "$1" "$IN_URL" "$IN_USER" "$IN_SECRET" >/dev/null
+    local store
+    store="$(store_secret "$1" "$IN_URL" "$IN_USER" "$IN_SECRET")"
     set_remembered_until "$1" $(($(date +%s) + days * 86400))
-    result true "Remembered for $days days" "$(jq -c '{warnings}' <<<"$checked")"
+    if [[ "$store" == file ]]; then
+      result true "Remembered for $days days in a file only you can read: there is no desktop keyring" "$(jq -c '{warnings}' <<<"$checked")"
+    else
+      result true "Remembered for $days days" "$(jq -c '{warnings}' <<<"$checked")"
+    fi
   fi
 }
 

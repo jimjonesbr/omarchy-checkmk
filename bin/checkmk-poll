@@ -47,10 +47,13 @@ send_notification() { # urgency headline description panel-view
   fi
 }
 
-# One line of a curl config: the value quoted, with \ and " escaped
+# One line of a curl config: the value quoted, with \ and " escaped and line
+# breaks encoded, so that no value can start an option line of its own
 curl_option() { # name value
   local v="${2//\\/\\\\}"
-  printf '%s = "%s"\n' "$1" "${v//\"/\\\"}"
+  v="${v//\"/\\\"}"
+  v="${v//$'\n'/\\n}"
+  printf '%s = "%s"\n' "$1" "${v//$'\r'/\\r}"
 }
 
 # Writes $WORK/<id>.json: {ok, error, services} with the normalised services of that server
@@ -97,7 +100,8 @@ fetch() { # server json
   local args=(-sS --max-time "$timeout" -G -w '\n%{http_code}' -H "Accept: application/json")
   [[ "$(jq -r '.insecure // false' <<<"$server")" == true ]] && args+=(-k)
   local config proxy c
-  config="$(curl_option url "$url/check_mk/api/1.0/domain-types/service/collections/all")"
+  # Only the web: never a file:// or other URL curl would also take
+  config='proto = "=http,https"'$'\n'"$(curl_option url "$url/check_mk/api/1.0/domain-types/service/collections/all")"
   for c in "${columns[@]}"; do config+=$'\n'"$(curl_option data-urlencode "columns=$c")"; done
   [[ -n "$query" ]] && config+=$'\n'"$(curl_option data-urlencode "query=$query")"
   proxy="$(jq -r '.proxy // ""' <<<"$server")"

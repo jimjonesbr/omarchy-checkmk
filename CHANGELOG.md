@@ -5,6 +5,24 @@ carry a `-beta.N` suffix.
 
 ## Unreleased
 
+### Security
+
+- A value that goes to curl (site URL, filters, proxy) can no longer add curl
+  options of its own, and curl only speaks http and https: a `file://` site
+  URL, for instance, is refused.
+- A user name or secret with a line break is refused, instead of adding an
+  HTTP header to every request.
+- The single-server configuration of 0.2.0 is read as text when it is
+  migrated; it used to be run as a shell script.
+- `servers.json` is written under a lock, so that two changes at the same time,
+  e.g. a poll and a save, can no longer leave it broken.
+
+### Changed
+
+- When a remembered password goes to a file because no desktop keyring is
+  running, the server form now says so.
+- Tests of the config helper's checks (`tests/config.test.js`).
+
 ### Removed
 
 - The number of problems next to the bar icon, and its `showCount` setting: at
