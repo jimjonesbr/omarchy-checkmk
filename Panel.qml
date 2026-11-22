@@ -1761,7 +1761,7 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: (root.about.name || "Checkmk for Omarchy") + " " + (root.about.version || "")
+              text: (root.about.name || "Checkmk status for Omarchy") + " " + (root.about.version || "")
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.body

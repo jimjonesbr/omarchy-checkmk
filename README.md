@@ -1,6 +1,8 @@
-# Checkmk for Omarchy
+# Checkmk status for Omarchy
 
-A bar widget for the Omarchy shell that keeps an eye on one or more Checkmk servers.
+A bar widget for the Omarchy shell that shows the state of one or more Checkmk
+servers. It is not a Checkmk server, and it does not monitor this machine: it
+only reads what your Checkmk servers report.
 
 - The bar icon takes the colour of the worst unhandled problem: amber for WARN,
   orange for UNKNOWN, red for CRIT. An unhandled CRIT also makes it pulse.

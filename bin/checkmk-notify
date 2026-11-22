@@ -92,7 +92,7 @@ def main():
         # The body is rendered as markup; check output must not be able to inject any
         body = html.escape(str(note.get("body") or ""), quote=False)
         calls.append(GLib.Variant("(susssasa{sv}i)", (
-            "Checkmk for Omarchy", 0, "", str(note.get("title", "")), body, [], hints, -1,
+            "Checkmk status for Omarchy", 0, "", str(note.get("title", "")), body, [], hints, -1,
         )))
 
     # The targets first: a click must find its token
